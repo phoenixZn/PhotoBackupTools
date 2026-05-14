@@ -1,2 +1,2 @@
 pip install pillow
-python E:/AdbSync/favourite_photo_flag_tool/photo_flagger.py
+python favourite_photo_flag_tool/photo_flagger.py
