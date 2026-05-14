@@ -31,6 +31,7 @@ class RunStats:
     total_files: int = 0
     processed_files: int = 0
     moved_files: int = 0
+    skipped_same_files: int = 0
     failed_files: int = 0
     removed_empty_dirs: int = 0
 
@@ -172,6 +173,32 @@ def organize_files(
             month_dir = backup_root / month_dir_name
             month_dir.mkdir(parents=True, exist_ok=True)
 
+            base_target_path = month_dir / file_path.name
+            if base_target_path.exists():
+                source_size = file_path.stat().st_size
+                target_size = base_target_path.stat().st_size
+                if source_size == target_size:
+                    relative_source = file_path.relative_to(root_dir)
+                    display_source = str(Path(root_dir.name) / relative_source)
+                    skip_message = (
+                        f"[提示] 同名且同大小，视为同文件并跳过：{display_source} "
+                        f"(size={source_size})"
+                    )
+                    emit_log(skip_message, json_events=json_events)
+                    emit_event(
+                        "duplicate_skipped",
+                        {
+                            "source": str(file_path),
+                            "target": str(base_target_path),
+                            "size": source_size,
+                            "processed": stats.processed_files,
+                            "total": stats.total_files,
+                        },
+                        json_events=json_events,
+                    )
+                    stats.skipped_same_files += 1
+                    continue
+
             target_path, renamed = unique_target_path(month_dir, file_path.name)
             if renamed:
                 emit_log(
@@ -234,7 +261,8 @@ def organize_files(
 
     summary = (
         f"整理完成：共 {stats.total_files} 个文件，成功 {stats.moved_files}，"
-        f"失败 {stats.failed_files}，删除空目录 {stats.removed_empty_dirs}。"
+        f"跳过同文件 {stats.skipped_same_files}，失败 {stats.failed_files}，"
+        f"删除空目录 {stats.removed_empty_dirs}。"
     )
     emit_log(summary, json_events=json_events)
     emit_event(
@@ -242,6 +270,7 @@ def organize_files(
         {
             "total": stats.total_files,
             "moved": stats.moved_files,
+            "skipped_same_files": stats.skipped_same_files,
             "failed": stats.failed_files,
             "removed_empty_dirs": stats.removed_empty_dirs,
         },

@@ -237,10 +237,11 @@ class MonthOrganizerGUI:
         if event_type == "done":
             total = int(payload.get("total", 0))
             moved = int(payload.get("moved", 0))
+            skipped = int(payload.get("skipped_same_files", 0))
             failed = int(payload.get("failed", 0))
             removed = int(payload.get("removed_empty_dirs", 0))
             self._append_log(
-                f"[结果] 总计 {total}，成功 {moved}，失败 {failed}，删除空目录 {removed}"
+                f"[结果] 总计 {total}，成功 {moved}，跳过同文件 {skipped}，失败 {failed}，删除空目录 {removed}"
             )
             return
 
