@@ -15,12 +15,15 @@ from __future__ import annotations
 import argparse
 import errno
 import json
+import shlex
+import subprocess
 import shutil
 import sys
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, List
+from typing import Callable, Dict, List
 
 
 EVENT_PREFIX = "__EVENT__ "
@@ -32,8 +35,10 @@ class RunStats:
     processed_files: int = 0
     moved_files: int = 0
     skipped_same_files: int = 0
+    renamed_files: int = 0
     failed_files: int = 0
     removed_empty_dirs: int = 0
+    month_moved_counts: Dict[str, int] = field(default_factory=dict)
 
 
 def emit_log(message: str, *, json_events: bool = False) -> None:
@@ -147,19 +152,67 @@ def remove_empty_subdirs(
     return removed_count
 
 
+def build_run_log_file_name(prefix: str, run_stamp: str, operation_count: int) -> str:
+    return f"{prefix}_{run_stamp}_ops{operation_count}.log"
+
+
+def save_run_logs(
+    *,
+    root_dir: Path,
+    backup_root: Path,
+    run_stamp: str,
+    total_ops: int,
+    all_log_lines: List[str],
+    month_move_logs: Dict[str, List[str]],
+) -> tuple[Path, List[Path]]:
+    root_log_file = root_dir / build_run_log_file_name("ym_organize", run_stamp, total_ops)
+    root_log_file.write_text("\n".join(all_log_lines) + "\n", encoding="utf-8-sig")
+
+    month_log_files: List[Path] = []
+    for month_name, lines in month_move_logs.items():
+        if not lines:
+            continue
+        month_dir = backup_root / month_name
+        month_log_file = month_dir / build_run_log_file_name(
+            "ym_moves", run_stamp, len(lines)
+        )
+        month_log_file.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+        month_log_files.append(month_log_file)
+    return root_log_file, month_log_files
+
+
+def build_command_line_text(argv: List[str]) -> str:
+    if sys.platform.startswith("win"):
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
+
+
 def organize_files(
     root_dir: Path,
     *,
     remove_empty_dirs: bool,
+    command_line_text: str,
+    parsed_args_text: str,
     json_events: bool = False,
 ) -> RunStats:
     stats = RunStats()
     backup_root = root_dir.parent / f"{root_dir.name}_YM"
     backup_root.mkdir(parents=True, exist_ok=True)
+    run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    all_log_lines: List[str] = []
+    month_move_logs: Dict[str, List[str]] = defaultdict(list)
+    month_moved_counts: Dict[str, int] = defaultdict(int)
+
+    def log_line(message: str) -> None:
+        all_log_lines.append(message)
+        emit_log(message, json_events=json_events)
+
+    log_line(f"CommandLine: {command_line_text}")
+    log_line(f"Arguments: {parsed_args_text}")
 
     files = iter_all_files(root_dir)
     stats.total_files = len(files)
-    emit_log(f"待处理文件总数：{stats.total_files}", json_events=json_events)
+    log_line(f"待处理文件总数：{stats.total_files}")
     emit_event(
         "start",
         {"total": stats.total_files, "backup_root": str(backup_root)},
@@ -172,19 +225,19 @@ def organize_files(
             month_dir_name = month_folder_name(file_path)
             month_dir = backup_root / month_dir_name
             month_dir.mkdir(parents=True, exist_ok=True)
+            relative_parent = file_path.parent.relative_to(root_dir)
+            from_dir = "." if str(relative_parent) == "." else str(relative_parent)
 
             base_target_path = month_dir / file_path.name
             if base_target_path.exists():
                 source_size = file_path.stat().st_size
                 target_size = base_target_path.stat().st_size
                 if source_size == target_size:
-                    relative_source = file_path.relative_to(root_dir)
-                    display_source = str(Path(root_dir.name) / relative_source)
                     skip_message = (
-                        f"[提示] 同名且同大小，视为同文件并跳过：{display_source} "
-                        f"(size={source_size})"
+                        f"Skip: [{file_path.name}] -> [{month_dir_name}]  :   "
+                        f"From:{from_dir}\\  跳过相同文件(size={source_size})"
                     )
-                    emit_log(skip_message, json_events=json_events)
+                    log_line(skip_message)
                     emit_event(
                         "duplicate_skipped",
                         {
@@ -201,9 +254,9 @@ def organize_files(
 
             target_path, renamed = unique_target_path(month_dir, file_path.name)
             if renamed:
-                emit_log(
+                stats.renamed_files += 1
+                log_line(
                     f"[警告] 发现重名，自动重命名：{file_path.name} -> {target_path.name}",
-                    json_events=json_events,
                 )
                 emit_event(
                     "name_conflict",
@@ -217,11 +270,17 @@ def organize_files(
 
             move_file_safely(file_path, target_path)
             stats.moved_files += 1
+            month_moved_counts[month_dir_name] += 1
 
-            relative_source = file_path.relative_to(root_dir)
-            display_source = str(Path(root_dir.name) / relative_source)
-            message = f"正在移动 {display_source} -> {month_dir_name}"
-            emit_log(message, json_events=json_events)
+            status_info = (
+                f"renamed_to={target_path.name}" if renamed else "status=ok"
+            )
+            message = (
+                f"Move: [{file_path.name}] -> [{month_dir_name}]  :   "
+                f"From:{from_dir}\\ {status_info}"
+            )
+            log_line(message)
+            month_move_logs[month_dir_name].append(message)
             emit_event(
                 "file_moved",
                 {
@@ -234,8 +293,14 @@ def organize_files(
             )
         except Exception as exc:
             stats.failed_files += 1
-            error_message = f"移动失败：{file_path}，错误：{exc}"
-            emit_log(error_message, json_events=json_events)
+            month_dir_name = month_folder_name(file_path)
+            relative_parent = file_path.parent.relative_to(root_dir)
+            from_dir = "." if str(relative_parent) == "." else str(relative_parent)
+            error_message = (
+                f"Fail: [{file_path.name}] -> [{month_dir_name}]  :   "
+                f"From:{from_dir}\\  error={exc}"
+            )
+            log_line(error_message)
             emit_event(
                 "error",
                 {
@@ -256,23 +321,48 @@ def organize_files(
 
     if remove_empty_dirs:
         stats.removed_empty_dirs = remove_empty_subdirs(
-            root_dir, logger=lambda msg: emit_log(msg, json_events=json_events), json_events=json_events
+            root_dir,
+            logger=log_line,
+            json_events=json_events,
         )
 
-    summary = (
-        f"整理完成：共 {stats.total_files} 个文件，成功 {stats.moved_files}，"
-        f"跳过同文件 {stats.skipped_same_files}，失败 {stats.failed_files}，"
-        f"删除空目录 {stats.removed_empty_dirs}。"
+    stats.month_moved_counts = dict(sorted(month_moved_counts.items(), key=lambda x: x[0]))
+    summary_line = (
+        "Summary: "
+        f"success={stats.moved_files}, "
+        f"failed={stats.failed_files}, "
+        f"skipped={stats.skipped_same_files}, "
+        f"renamed={stats.renamed_files}, "
+        f"removed_empty_dirs={stats.removed_empty_dirs}, "
+        f"total={stats.total_files}"
     )
-    emit_log(summary, json_events=json_events)
+    log_line(summary_line)
+
+    for month_name, count in stats.month_moved_counts.items():
+        log_line(f"SummaryByMonth: [{month_name}] moved_in={count}")
+
+    root_log_file, month_log_files = save_run_logs(
+        root_dir=root_dir,
+        backup_root=backup_root,
+        run_stamp=run_stamp,
+        total_ops=stats.total_files,
+        all_log_lines=all_log_lines,
+        month_move_logs=dict(month_move_logs),
+    )
+    log_line(f"LogSaved: root={root_log_file.name}")
+    for month_log_file in sorted(month_log_files):
+        log_line(f"LogSaved: month={month_log_file.parent.name}/{month_log_file.name}")
+
     emit_event(
         "done",
         {
             "total": stats.total_files,
             "moved": stats.moved_files,
             "skipped_same_files": stats.skipped_same_files,
+            "renamed": stats.renamed_files,
             "failed": stats.failed_files,
             "removed_empty_dirs": stats.removed_empty_dirs,
+            "month_moved_counts": stats.month_moved_counts,
         },
         json_events=json_events,
     )
@@ -313,10 +403,15 @@ def main() -> int:
             print("已取消操作。")
             return 0
 
+    command_line_text = build_command_line_text([sys.executable, *sys.argv])
+    parsed_args_text = json.dumps(vars(args), ensure_ascii=False)
+
     try:
         organize_files(
             root_dir,
             remove_empty_dirs=args.remove_empty_dirs,
+            command_line_text=command_line_text,
+            parsed_args_text=parsed_args_text,
             json_events=args.json_events,
         )
         return 0
