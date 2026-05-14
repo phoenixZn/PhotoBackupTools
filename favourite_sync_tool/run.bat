@@ -1,0 +1,1 @@
+python e:\AdbSync\favourite_sync_tool\run_favourite_sync_gui.py

@@ -1,0 +1,29 @@
+[
+  {
+    "name": "Camera-2026",
+    "python": "python",
+    "phone_dir": "/sdcard/DCIM/Camera",
+    "pc_dir": "E:\\PhotoBackup\\Camera",
+    "start_date": "2026.01.01",
+    "end_date": "2026.12.31",
+    "all_files": false
+  },
+  {
+    "name": "Screenshots-2026",
+    "python": "python",
+    "phone_dir": "/sdcard/Pictures/Screenshots",
+    "pc_dir": "E:\\PhotoBackup\\Screenshots",
+    "start_date": "2026.01.01",
+    "end_date": "2026.12.31",
+    "all_files": true
+  },
+  {
+    "name": "Config-Z",
+    "python": "python",
+    "phone_dir": "/sdcard/Z",
+    "pc_dir": "E:\\PhotoBackup\\Z",
+    "start_date": "2026.01.01",
+    "end_date": "2026.12.31",
+    "all_files": true
+  }
+]

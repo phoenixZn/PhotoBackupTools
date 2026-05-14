@@ -1,0 +1,199 @@
+sync_win_tool 功能清单（完整）
+
+一、工具定位
+1) 提供 Windows 下的图形化备份入口（Tkinter GUI）。
+2) GUI 本身不重写备份业务逻辑，而是调用后端脚本：
+   - cmd_adb_date_range_backup.py
+3) 核心用途：按日期范围把 Android 手机目录中的文件备份到 PC 目录。
+
+
+二、启动与运行环境
+1) 启动入口
+   - run_backup_gui.py
+2) 依赖
+   - Python 3.9+
+   - adb 命令可用（已加入 PATH）
+   - 手机 USB 调试已开启并授权
+3) 启动前检查
+   - GUI 启动时会检查后端脚本是否存在
+   - 若不存在会弹窗提示并终止启动
+
+
+三、GUI 参数输入能力
+1) Python Command
+   - 用于指定 Python 启动命令，默认值为 python
+   - 支持复合命令（如 py -3）
+2) Phone Directory
+   - 手机源目录（例如 /sdcard/DCIM/Camera）
+3) PC Directory
+   - 电脑目标目录
+   - 支持 Browse 按钮打开系统目录选择器
+4) Start Date / End Date
+   - 日期范围（闭区间，包含起止日期）
+5) Include all files (--all-files)
+   - 勾选：不过滤扩展名
+   - 不勾选：后端按媒体扩展名集合过滤
+
+
+四、输入校验能力
+1) 必填项校验
+   - Python Command、Phone Directory、PC Directory、Start Date、End Date 均不能为空
+2) 日期格式校验
+   - 支持 YYYY.MM.DD
+   - 支持 YYYY-MM-DD
+   - 支持 YYYY/MM/DD
+3) 日期逻辑校验
+   - Start Date 不能晚于 End Date
+4) 校验失败时
+   - 通过弹窗提示错误，不会启动备份
+
+
+五、静态配置（static_config.json）能力
+1) 文件定位
+   - sync_win_tool/static_config.json
+2) 数据形态
+   - 顶层为 List
+   - 每项包含：
+     - name
+     - python
+     - phone_dir
+     - pc_dir
+     - start_date
+     - end_date
+     - all_files
+3) 启动加载行为
+   - GUI 启动时读取静态配置列表
+   - 项目字段缺失会回退默认值
+   - name 为空/无效项会被过滤
+   - 文件不存在、JSON 异常、结构错误时不会阻塞 GUI 启动
+4) 快捷切换
+   - Static Config 下拉框按 name 展示配置项
+   - 点选后把对应配置填充到当前表单
+   - 不会自动执行备份
+5) 新增静态配置（Save As...）
+   - 点击 Save As... 按钮后弹窗输入 name
+   - 自动预填建议名称（Config-1、Config-2...，可手动改）
+   - 会校验：name 非空且不能与现有项重名
+   - 保存内容来自“当前表单值”
+   - 保存成功后会写回 static_config.json 并刷新下拉列表
+
+
+六、动态配置（gui_config.json）能力
+1) 文件定位
+   - sync_win_tool/gui_config.json
+2) 作用
+   - 保存最近一次使用的表单配置
+3) 读取时机
+   - GUI 启动时自动读取并回填
+4) 写入时机
+   - 点击 Run Backup 后（确认执行前后流程中）
+   - 关闭窗口时
+5) 与静态配置关系
+   - 静态配置用于多套“手工预设”
+   - 动态配置用于“最近一次状态记忆”
+   - 两者并存，互不冲突
+
+
+七、执行确认与命令构建能力
+1) Run Backup 执行前确认
+   - 弹窗展示关键参数供用户确认
+2) 命令构建
+   - 对 Python Command 使用 shlex.split（Windows 兼容参数拆分）
+   - 自动拼接后端脚本路径与参数：
+     - --phone-dir
+     - --pc-dir
+     - --start-date
+     - --end-date
+     - --all-files（按勾选追加）
+3) 实时输出保障（避免缓冲导致“最后才显示”）
+   - 自动为 Python 命令注入 -u（无缓冲）
+   - 子进程环境注入 PYTHONUNBUFFERED=1
+
+
+八、线程与日志显示能力
+1) 工作线程执行
+   - 备份命令在后台线程执行，避免阻塞 GUI 主线程
+2) 主线程安全更新
+   - 通过线程安全队列回传日志
+   - 主线程轮询队列，逐行追加到 Execution Log 文本框
+3) 日志窗口行为
+   - 实时滚动到最新输出
+   - 可通过 Clear Log 按钮清空显示
+
+
+九、进度展示能力（GUI 内）
+1) 进度来源
+   - 解析后端输出行中的进度格式：[current/total]
+2) 展示方式
+   - 进度文本：Progress: x/y (z%)
+   - 进度条：0~100%
+3) 状态阶段
+   - preparing...
+   - completed
+   - failed
+   - failed to launch
+4) 说明
+   - 属于“按输出估算进度”，不改动 adb 传输策略
+
+
+十、执行日志落盘能力（GUI 侧）
+1) 存储目录
+   - sync_win_tool/logs/
+2) 文件名规则
+   - gui_backup_{源文件夹名}_{执行开始时间}.log
+   - 例：gui_backup_Screenshots_20260430_142000.log
+3) 源文件夹名提取
+   - 从 Phone Directory 末级目录提取（并做文件名安全化）
+4) 写入时机
+   - 每次任务结束后（成功/失败/启动失败）自动写入
+5) 文件内容
+   - Start / End 时间
+   - Exit code
+   - 实际执行命令
+   - 本次 GUI 收到的完整执行输出
+
+
+十一、执行完成反馈能力
+1) 成功时
+   - 弹窗提示 Backup completed
+   - 包含 GUI log 文件保存路径（若写入成功）
+2) 失败时
+   - 弹窗提示 Backup failed
+   - 显示退出码
+   - 包含 GUI log 文件保存路径（若写入成功）
+3) 日志区收尾
+   - 输出 Process finished with exit code X
+
+
+十二、运行状态保护能力
+1) 防重复点击
+   - 任务 running 时会忽略再次点击 Run Backup
+2) 关闭窗口保护
+   - 若任务仍在运行，关闭窗口前会二次确认
+
+
+十三、与后端脚本协作边界
+1) GUI 负责
+   - 参数采集与校验
+   - 命令组装
+   - 运行控制（线程、日志、进度、弹窗）
+   - 配置持久化（gui_config/static_config）
+   - GUI 级日志落盘
+2) 后端脚本负责
+   - adb 可用性与设备检查
+   - 手机端元数据读取与筛选
+   - adb pull 实际复制
+   - 后端自身日志文件输出
+
+
+十四、当前可见配置文件
+1) gui_config.json
+   - 动态最近状态（自动写入）
+2) static_config.json
+   - 静态预设列表（可通过 GUI Save As... 新增）
+
+
+十五、已知行为说明
+1) 进度基于后端输出行进行解析，依赖后端持续输出 [x/y] 行。
+2) 日志落盘在任务结束时一次性写入，避免高频磁盘写影响传输过程。
+3) GUI 默认编码和日志读取采用 utf-8 + replace 策略，尽量保证异常字符不致崩溃。

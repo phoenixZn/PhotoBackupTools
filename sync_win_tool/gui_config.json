@@ -1,0 +1,9 @@
+{
+  "python": "python",
+  "phone_dir": "/sdcard/DCIM",
+  "pc_dir": "E:\\PhotoBackup\\DCIM2",
+  "start_date": "2022.01.01",
+  "end_date": "2026.12.31",
+  "all_files": true,
+  "write_sync_record": false
+}

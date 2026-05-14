@@ -1,0 +1,1 @@
+python "photo_flagger.py" "E:\PhotoBackup\DCIM\Camera"
