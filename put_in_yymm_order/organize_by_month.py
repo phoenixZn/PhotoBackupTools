@@ -1,13 +1,13 @@
 """
-按月目录整理 CLI 工具。
+目录整理 CLI 工具（支持按年 / 按月 / 按日）。
 
 使用说明（示例）：
-1) 交互确认后执行：
+1) 交互确认后执行（默认按月）：
    python organize_by_month.py --root "D:/demo/source_dir"
-2) 跳过确认并删除空目录：
-   python organize_by_month.py --root "D:/demo/source_dir" --yes --remove-empty-dirs
-3) 给 GUI 使用的结构化事件输出：
-   python organize_by_month.py --root "D:/demo/source_dir" --yes --json-events
+2) 跳过确认并删除空目录（按年）：
+   python organize_by_month.py --root "D:/demo/source_dir" --yes --remove-empty-dirs --group-by year
+3) 给 GUI 使用的结构化事件输出（按日）：
+   python organize_by_month.py --root "D:/demo/source_dir" --yes --json-events --group-by day
 """
 
 from __future__ import annotations
@@ -24,10 +24,23 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Literal
 
 
 EVENT_PREFIX = "__EVENT__ "
+GroupByMode = Literal["year", "month", "day"]
+
+# 统一定义展示文案和输出目录后缀，避免 CLI/GUI/日志口径不一致。
+GROUP_BY_LABELS: dict[GroupByMode, str] = {
+    "year": "按年",
+    "month": "按月",
+    "day": "按日",
+}
+GROUP_BY_FOLDER_SUFFIX: dict[GroupByMode, str] = {
+    "year": "Y",
+    "month": "YM",
+    "day": "YMD",
+}
 
 
 @dataclass
@@ -40,7 +53,7 @@ class RunStats:
     renamed_files: int = 0
     failed_files: int = 0
     removed_empty_dirs: int = 0
-    month_moved_counts: Dict[str, int] = field(default_factory=dict)
+    bucket_moved_counts: Dict[str, int] = field(default_factory=dict)
 
 
 def emit_log(message: str, *, json_events: bool = False) -> None:
@@ -60,10 +73,12 @@ def emit_event(event_type: str, payload: dict, *, json_events: bool = False) -> 
     print(f"{EVENT_PREFIX}{json.dumps(body, ensure_ascii=True)}", flush=True)
 
 
-def confirm_operation(root_dir: Path) -> bool:
+def confirm_operation(root_dir: Path, *, group_by: GroupByMode) -> bool:
+    mode_label = GROUP_BY_LABELS[group_by]
     prompt = (
         f"将整理目录：{root_dir}\n"
-        "此操作将移动所有文件到月份文件夹，是否继续？[y/N]: "
+        f"整理模式：{mode_label}\n"
+        "此操作将移动所有文件到目标时间目录，是否继续？[y/N]: "
     )
     try:
         answer = input(prompt).strip().lower()
@@ -72,9 +87,14 @@ def confirm_operation(root_dir: Path) -> bool:
     return answer in {"y", "yes"}
 
 
-def month_folder_name(file_path: Path) -> str:
+def build_time_bucket_name(file_path: Path, *, group_by: GroupByMode) -> str:
     modified_dt = datetime.fromtimestamp(file_path.stat().st_mtime)
-    return f"{modified_dt.year:04d}_{modified_dt.month:02d}"
+    # 分目录策略只依赖 mtime，便于保持性能和行为可预期。
+    if group_by == "year":
+        return f"{modified_dt.year:04d}"
+    if group_by == "month":
+        return f"{modified_dt.year:04d}_{modified_dt.month:02d}"
+    return f"{modified_dt.year:04d}_{modified_dt.month:02d}_{modified_dt.day:02d}"
 
 
 def iter_all_files(root_dir: Path) -> List[Path]:
@@ -181,22 +201,22 @@ def save_run_logs(
     run_stamp: str,
     total_ops: int,
     all_log_lines: List[str],
-    month_move_logs: Dict[str, List[str]],
+    bucket_move_logs: Dict[str, List[str]],
 ) -> tuple[Path, List[Path]]:
     root_log_file = root_dir / build_run_log_file_name("ym_organize", run_stamp, total_ops)
     root_log_file.write_text("\n".join(all_log_lines) + "\n", encoding="utf-8-sig")
 
-    month_log_files: List[Path] = []
-    for month_name, lines in month_move_logs.items():
+    bucket_log_files: List[Path] = []
+    for bucket_name, lines in bucket_move_logs.items():
         if not lines:
             continue
-        month_dir = backup_root / month_name
-        month_log_file = month_dir / build_run_log_file_name(
+        bucket_dir = backup_root / bucket_name
+        month_log_file = bucket_dir / build_run_log_file_name(
             "ym_moves", run_stamp, len(lines)
         )
         month_log_file.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
-        month_log_files.append(month_log_file)
-    return root_log_file, month_log_files
+        bucket_log_files.append(month_log_file)
+    return root_log_file, bucket_log_files
 
 
 def build_command_line_text(argv: List[str]) -> str:
@@ -208,6 +228,7 @@ def build_command_line_text(argv: List[str]) -> str:
 def organize_files(
     root_dir: Path,
     *,
+    group_by: GroupByMode,
     remove_empty_dirs: bool,
     ext_whitelist: set[str],
     command_line_text: str,
@@ -215,12 +236,13 @@ def organize_files(
     json_events: bool = False,
 ) -> RunStats:
     stats = RunStats()
-    backup_root = root_dir.parent / f"{root_dir.name}_YM"
+    # 按模式写入不同后缀目录，避免不同整理策略互相覆盖结果。
+    backup_root = root_dir.parent / f"{root_dir.name}_{GROUP_BY_FOLDER_SUFFIX[group_by]}"
     backup_root.mkdir(parents=True, exist_ok=True)
     run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     all_log_lines: List[str] = []
-    month_move_logs: Dict[str, List[str]] = defaultdict(list)
-    month_moved_counts: Dict[str, int] = defaultdict(int)
+    bucket_move_logs: Dict[str, List[str]] = defaultdict(list)
+    bucket_moved_counts: Dict[str, int] = defaultdict(int)
 
     def log_line(message: str) -> None:
         all_log_lines.append(message)
@@ -228,6 +250,7 @@ def organize_files(
 
     log_line(f"CommandLine: {command_line_text}")
     log_line(f"Arguments: {parsed_args_text}")
+    log_line(f"GroupBy: {group_by} ({GROUP_BY_LABELS[group_by]})")
 
     files = iter_all_files(root_dir)
     stats.total_files = len(files)
@@ -246,6 +269,7 @@ def organize_files(
             "total": stats.total_files,
             "backup_root": str(backup_root),
             "ext_whitelist": sorted(ext_whitelist),
+            "group_by": group_by,
         },
         json_events=json_events,
     )
@@ -262,19 +286,19 @@ def organize_files(
             )
             continue
         try:
-            month_dir_name = month_folder_name(file_path)
-            month_dir = backup_root / month_dir_name
-            month_dir.mkdir(parents=True, exist_ok=True)
+            bucket_dir_name = build_time_bucket_name(file_path, group_by=group_by)
+            bucket_dir = backup_root / bucket_dir_name
+            bucket_dir.mkdir(parents=True, exist_ok=True)
             relative_parent = file_path.parent.relative_to(root_dir)
             from_dir = "." if str(relative_parent) == "." else str(relative_parent)
 
-            base_target_path = month_dir / file_path.name
+            base_target_path = bucket_dir / file_path.name
             if base_target_path.exists():
                 source_size = file_path.stat().st_size
                 target_size = base_target_path.stat().st_size
                 if source_size == target_size:
                     skip_message = (
-                        f"Skip: [{file_path.name}] -> [{month_dir_name}]  :   "
+                        f"Skip: [{file_path.name}] -> [{bucket_dir_name}]  :   "
                         f"From:{from_dir}\\  跳过相同文件(size={source_size})"
                     )
                     log_line(skip_message)
@@ -292,7 +316,7 @@ def organize_files(
                     stats.skipped_same_files += 1
                     continue
 
-            target_path, renamed = unique_target_path(month_dir, file_path.name)
+            target_path, renamed = unique_target_path(bucket_dir, file_path.name)
             if renamed:
                 stats.renamed_files += 1
                 log_line(
@@ -303,24 +327,24 @@ def organize_files(
                     {
                         "original_name": file_path.name,
                         "renamed_to": target_path.name,
-                        "month": month_dir_name,
+                        "bucket": bucket_dir_name,
                     },
                     json_events=json_events,
                 )
 
             move_file_safely(file_path, target_path)
             stats.moved_files += 1
-            month_moved_counts[month_dir_name] += 1
+            bucket_moved_counts[bucket_dir_name] += 1
 
             status_info = (
                 f"renamed_to={target_path.name}" if renamed else "status=ok"
             )
             message = (
-                f"Move: [{file_path.name}] -> [{month_dir_name}]  :   "
+                f"Move: [{file_path.name}] -> [{bucket_dir_name}]  :   "
                 f"From:{from_dir}\\ {status_info}"
             )
             log_line(message)
-            month_move_logs[month_dir_name].append(message)
+            bucket_move_logs[bucket_dir_name].append(message)
             emit_event(
                 "file_moved",
                 {
@@ -333,11 +357,11 @@ def organize_files(
             )
         except Exception as exc:
             stats.failed_files += 1
-            month_dir_name = month_folder_name(file_path)
+            bucket_dir_name = build_time_bucket_name(file_path, group_by=group_by)
             relative_parent = file_path.parent.relative_to(root_dir)
             from_dir = "." if str(relative_parent) == "." else str(relative_parent)
             error_message = (
-                f"Fail: [{file_path.name}] -> [{month_dir_name}]  :   "
+                f"Fail: [{file_path.name}] -> [{bucket_dir_name}]  :   "
                 f"From:{from_dir}\\  error={exc}"
             )
             log_line(error_message)
@@ -366,7 +390,7 @@ def organize_files(
             json_events=json_events,
         )
 
-    stats.month_moved_counts = dict(sorted(month_moved_counts.items(), key=lambda x: x[0]))
+    stats.bucket_moved_counts = dict(sorted(bucket_moved_counts.items(), key=lambda x: x[0]))
     summary_line = (
         "Summary: "
         f"success={stats.moved_files}, "
@@ -379,20 +403,20 @@ def organize_files(
     )
     log_line(summary_line)
 
-    for month_name, count in stats.month_moved_counts.items():
-        log_line(f"SummaryByMonth: [{month_name}] moved_in={count}")
+    for bucket_name, count in stats.bucket_moved_counts.items():
+        log_line(f"SummaryByBucket: [{bucket_name}] moved_in={count}")
 
-    root_log_file, month_log_files = save_run_logs(
+    root_log_file, bucket_log_files = save_run_logs(
         root_dir=root_dir,
         backup_root=backup_root,
         run_stamp=run_stamp,
         total_ops=stats.total_files,
         all_log_lines=all_log_lines,
-        month_move_logs=dict(month_move_logs),
+        bucket_move_logs=dict(bucket_move_logs),
     )
     log_line(f"LogSaved: root={root_log_file.name}")
-    for month_log_file in sorted(month_log_files):
-        log_line(f"LogSaved: month={month_log_file.parent.name}/{month_log_file.name}")
+    for month_log_file in sorted(bucket_log_files):
+        log_line(f"LogSaved: bucket={month_log_file.parent.name}/{month_log_file.name}")
 
     emit_event(
         "done",
@@ -404,7 +428,9 @@ def organize_files(
             "renamed": stats.renamed_files,
             "failed": stats.failed_files,
             "removed_empty_dirs": stats.removed_empty_dirs,
-            "month_moved_counts": stats.month_moved_counts,
+            "group_by": group_by,
+            "bucket_moved_counts": stats.bucket_moved_counts,
+            "month_moved_counts": stats.bucket_moved_counts,
         },
         json_events=json_events,
     )
@@ -412,8 +438,14 @@ def organize_files(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="将目录中的文件按修改时间（月）整理到同级备份目录。")
+    parser = argparse.ArgumentParser(description="将目录中的文件按修改时间（年/月/日）整理到同级备份目录。")
     parser.add_argument("--root", required=True, help="待整理的根目录路径")
+    parser.add_argument(
+        "--group-by",
+        default="month",
+        choices=["year", "month", "day"],
+        help="分目录模式：year=按年，month=按月（默认），day=按日",
+    )
     parser.add_argument(
         "--remove-empty-dirs",
         action="store_true",
@@ -449,7 +481,7 @@ def main() -> int:
         return 2
 
     if not args.yes:
-        if not confirm_operation(root_dir):
+        if not confirm_operation(root_dir, group_by=args.group_by):
             print("已取消操作。")
             return 0
 
@@ -461,6 +493,7 @@ def main() -> int:
         organize_files(
             root_dir,
             remove_empty_dirs=args.remove_empty_dirs,
+            group_by=args.group_by,
             ext_whitelist=ext_whitelist,
             command_line_text=command_line_text,
             parsed_args_text=parsed_args_text,

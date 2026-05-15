@@ -1,7 +1,8 @@
 {
   "root_dir": "E:\\PhotoBackup\\DCIM2\\Screenshots",
   "ext_whitelist": "jpg; png; mp4;",
-  "remove_empty_dirs": false,
+  "group_by": "year",
+  "remove_empty_dirs": true,
   "warn_error_only": false,
   "auto_save": true
 }

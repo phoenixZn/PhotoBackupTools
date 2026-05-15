@@ -1,6 +1,7 @@
 {
   "root_dir": "",
   "ext_whitelist": "",
+  "group_by": "month",
   "remove_empty_dirs": false,
   "warn_error_only": false,
   "auto_save": true

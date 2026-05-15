@@ -1,10 +1,10 @@
 """
-按月目录整理 GUI 启动器（tkinter）。
+目录整理 GUI 启动器（tkinter，支持按年/按月/按日）。
 
 使用说明（示例）：
 1) 启动界面：
    python gui_launcher.py
-2) 在界面中选择/拖入根目录后，点击“按月整理”。
+2) 在界面中选择/拖入根目录后，选择整理模式并点击“开始整理”。
 3) GUI 只负责参数收集与结果展示，实际整理由 organize_by_month.py 执行。
 """
 
@@ -35,15 +35,25 @@ except Exception:
     TkinterDnD = None
 
 
+GROUP_BY_LABEL_TO_VALUE = {
+    "按年": "year",
+    "按月": "month",
+    "按日": "day",
+}
+# 配置文件存英文值，界面显示中文标签。
+GROUP_BY_VALUE_TO_LABEL = {value: key for key, value in GROUP_BY_LABEL_TO_VALUE.items()}
+
+
 class MonthOrganizerGUI:
     def __init__(self, root: tk.Tk, *, settings_file: str = SETTINGS_FILE_NAME) -> None:
         self.root = root
-        self.root.title("按月目录整理工具")
+        self.root.title("目录整理工具")
         self.root.geometry("860x560")
         self._settings_file = settings_file
 
         self.root_path_var = tk.StringVar()
         self.ext_whitelist_var = tk.StringVar()
+        self.group_by_var = tk.StringVar(value="month")
         self.progress_var = tk.StringVar(value="进度：0 / 0")
         self.remove_empty_var = tk.BooleanVar(value=False)
         self.warn_error_only_var = tk.BooleanVar(value=False)
@@ -74,6 +84,23 @@ class MonthOrganizerGUI:
         whitelist_entry.pack(side="left", fill="x", expand=True, padx=(6, 8))
         ttk.Label(whitelist_frame, text="留空=全部；示例：.jpg .png,.mp4").pack(side="left")
 
+        group_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
+        group_frame.pack(fill="x")
+        ttk.Label(group_frame, text="分目录模式：").pack(side="left")
+        self.group_by_combo = ttk.Combobox(
+            group_frame,
+            state="readonly",
+            values=list(GROUP_BY_LABEL_TO_VALUE.keys()),
+            width=14,
+        )
+        self.group_by_combo.pack(side="left", padx=(6, 8))
+        self.group_by_combo.set("按月")
+        self.group_by_combo.bind("<<ComboboxSelected>>", self._on_group_mode_changed)
+        ttk.Label(
+            group_frame,
+            text="按年=YYYY，按月=YYYY_MM，按日=YYYY_MM_DD",
+        ).pack(side="left")
+
         option_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
         option_frame.pack(fill="x")
         ttk.Checkbutton(
@@ -100,7 +127,7 @@ class MonthOrganizerGUI:
 
         action_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
         action_frame.pack(fill="x")
-        self.run_button = ttk.Button(action_frame, text="按月整理", command=self._run_organize)
+        self.run_button = ttk.Button(action_frame, text="开始整理", command=self._run_organize)
         self.run_button.pack(side="left")
 
         log_frame = ttk.Frame(self.root, padding=(12, 0, 12, 12))
@@ -150,6 +177,10 @@ class MonthOrganizerGUI:
             return True
         return text.startswith(prefixes)
 
+    def _on_group_mode_changed(self, _event: tk.Event | None = None) -> None:
+        selected = self.group_by_combo.get().strip()
+        self.group_by_var.set(GROUP_BY_LABEL_TO_VALUE.get(selected, "month"))
+
     def _set_running(self, running: bool) -> None:
         self.run_button.configure(state=("disabled" if running else "normal"))
 
@@ -164,6 +195,7 @@ class MonthOrganizerGUI:
         return {
             "root_dir": "",
             "ext_whitelist": "",
+            "group_by": "month",
             "remove_empty_dirs": False,
             "warn_error_only": False,
             "auto_save": True,
@@ -173,6 +205,7 @@ class MonthOrganizerGUI:
         return {
             "root_dir": self.root_path_var.get().strip(),
             "ext_whitelist": self.ext_whitelist_var.get().strip(),
+            "group_by": self.group_by_var.get().strip() or "month",
             "remove_empty_dirs": self.remove_empty_var.get(),
             "warn_error_only": self.warn_error_only_var.get(),
             "auto_save": self.auto_save_var.get(),
@@ -181,6 +214,11 @@ class MonthOrganizerGUI:
     def _apply_settings(self, settings: dict[str, object]) -> None:
         self.root_path_var.set(str(settings.get("root_dir", "") or ""))
         self.ext_whitelist_var.set(str(settings.get("ext_whitelist", "") or ""))
+        group_by = str(settings.get("group_by", "month") or "month").lower()
+        if group_by not in GROUP_BY_VALUE_TO_LABEL:
+            group_by = "month"
+        self.group_by_var.set(group_by)
+        self.group_by_combo.set(GROUP_BY_VALUE_TO_LABEL[group_by])
         self.remove_empty_var.set(bool(settings.get("remove_empty_dirs", False)))
         self.warn_error_only_var.set(bool(settings.get("warn_error_only", False)))
         self.auto_save_var.set(bool(settings.get("auto_save", True)))
@@ -233,6 +271,8 @@ class MonthOrganizerGUI:
             str(script_path),
             "--root",
             str(root_dir),
+            "--group-by",
+            self.group_by_var.get(),
             "--yes",
             "--json-events",
         ]
@@ -256,7 +296,7 @@ class MonthOrganizerGUI:
 
         confirmed = messagebox.askyesno(
             "安全确认",
-            "此操作将移动所有文件到月份文件夹，是否继续？",
+            "此操作将移动所有文件到目标时间目录，是否继续？",
         )
         if not confirmed:
             self._append_log("用户取消了本次整理。")
@@ -265,7 +305,7 @@ class MonthOrganizerGUI:
         self.progressbar.configure(value=0, maximum=100)
         self.progress_var.set("进度：0 / 0")
         self._set_running(True)
-        self._append_log(f"开始执行：{root_dir}")
+        self._append_log(f"开始执行：{root_dir}（模式：{self.group_by_var.get()}）")
 
         cmd = self._build_command(root_dir)
         thread = threading.Thread(target=self._run_subprocess_worker, args=(cmd,), daemon=True)
@@ -391,7 +431,7 @@ def create_root() -> tk.Tk:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="按月目录整理 GUI 启动器。")
+    parser = argparse.ArgumentParser(description="目录整理 GUI 启动器（按年/按月/按日）。")
     parser.add_argument(
         "--settings-file",
         default=SETTINGS_FILE_NAME,
