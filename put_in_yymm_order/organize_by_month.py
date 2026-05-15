@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import errno
 import json
+import re
 import shlex
 import subprocess
 import shutil
@@ -33,6 +34,7 @@ EVENT_PREFIX = "__EVENT__ "
 class RunStats:
     total_files: int = 0
     processed_files: int = 0
+    filtered_by_whitelist: int = 0
     moved_files: int = 0
     skipped_same_files: int = 0
     renamed_files: int = 0
@@ -77,6 +79,22 @@ def month_folder_name(file_path: Path) -> str:
 
 def iter_all_files(root_dir: Path) -> List[Path]:
     return [p for p in root_dir.rglob("*") if p.is_file()]
+
+
+def parse_ext_whitelist(raw_text: str) -> set[str]:
+    if not raw_text.strip():
+        return set()
+
+    items = re.split(r"[,\s;]+", raw_text.strip())
+    normalized: set[str] = set()
+    for item in items:
+        token = item.strip().lower()
+        if not token:
+            continue
+        if not token.startswith("."):
+            token = f".{token}"
+        normalized.add(token)
+    return normalized
 
 
 def unique_target_path(target_dir: Path, file_name: str) -> tuple[Path, bool]:
@@ -191,6 +209,7 @@ def organize_files(
     root_dir: Path,
     *,
     remove_empty_dirs: bool,
+    ext_whitelist: set[str],
     command_line_text: str,
     parsed_args_text: str,
     json_events: bool = False,
@@ -213,14 +232,35 @@ def organize_files(
     files = iter_all_files(root_dir)
     stats.total_files = len(files)
     log_line(f"待处理文件总数：{stats.total_files}")
+    if ext_whitelist:
+        log_line(
+            "文件类型白名单已启用："
+            + ", ".join(sorted(ext_whitelist))
+            + "（仅移动命中后缀）"
+        )
+    else:
+        log_line("文件类型白名单为空：将整理全部文件。")
     emit_event(
         "start",
-        {"total": stats.total_files, "backup_root": str(backup_root)},
+        {
+            "total": stats.total_files,
+            "backup_root": str(backup_root),
+            "ext_whitelist": sorted(ext_whitelist),
+        },
         json_events=json_events,
     )
 
     for file_path in files:
         stats.processed_files += 1
+        file_ext = file_path.suffix.lower()
+        if ext_whitelist and file_ext not in ext_whitelist:
+            stats.filtered_by_whitelist += 1
+            emit_event(
+                "progress",
+                {"processed": stats.processed_files, "total": stats.total_files},
+                json_events=json_events,
+            )
+            continue
         try:
             month_dir_name = month_folder_name(file_path)
             month_dir = backup_root / month_dir_name
@@ -332,6 +372,7 @@ def organize_files(
         f"success={stats.moved_files}, "
         f"failed={stats.failed_files}, "
         f"skipped={stats.skipped_same_files}, "
+        f"filtered_by_whitelist={stats.filtered_by_whitelist}, "
         f"renamed={stats.renamed_files}, "
         f"removed_empty_dirs={stats.removed_empty_dirs}, "
         f"total={stats.total_files}"
@@ -359,6 +400,7 @@ def organize_files(
             "total": stats.total_files,
             "moved": stats.moved_files,
             "skipped_same_files": stats.skipped_same_files,
+            "filtered_by_whitelist": stats.filtered_by_whitelist,
             "renamed": stats.renamed_files,
             "failed": stats.failed_files,
             "removed_empty_dirs": stats.removed_empty_dirs,
@@ -383,6 +425,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="仅输出结构化事件（供 GUI 解析）",
     )
+    parser.add_argument(
+        "--ext-whitelist",
+        default="",
+        help=(
+            "仅移动白名单后缀（为空则整理全部）。"
+            "支持空格/逗号/分号分隔，如 '.jpg .png,.mp4'"
+        ),
+    )
     return parser
 
 
@@ -405,11 +455,13 @@ def main() -> int:
 
     command_line_text = build_command_line_text([sys.executable, *sys.argv])
     parsed_args_text = json.dumps(vars(args), ensure_ascii=False)
+    ext_whitelist = parse_ext_whitelist(args.ext_whitelist)
 
     try:
         organize_files(
             root_dir,
             remove_empty_dirs=args.remove_empty_dirs,
+            ext_whitelist=ext_whitelist,
             command_line_text=command_line_text,
             parsed_args_text=parsed_args_text,
             json_events=args.json_events,

@@ -40,6 +40,7 @@ class MonthOrganizerGUI:
         self.root.geometry("860x560")
 
         self.root_path_var = tk.StringVar()
+        self.ext_whitelist_var = tk.StringVar()
         self.progress_var = tk.StringVar(value="进度：0 / 0")
         self.remove_empty_var = tk.BooleanVar(value=False)
         self.warn_error_only_var = tk.BooleanVar(value=False)
@@ -59,6 +60,13 @@ class MonthOrganizerGUI:
         self.path_entry = ttk.Entry(top_frame, textvariable=self.root_path_var)
         self.path_entry.pack(side="left", fill="x", expand=True, padx=(6, 8))
         ttk.Button(top_frame, text="浏览", command=self._select_root_dir).pack(side="left")
+
+        whitelist_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
+        whitelist_frame.pack(fill="x")
+        ttk.Label(whitelist_frame, text="文件类型白名单：").pack(side="left")
+        whitelist_entry = ttk.Entry(whitelist_frame, textvariable=self.ext_whitelist_var)
+        whitelist_entry.pack(side="left", fill="x", expand=True, padx=(6, 8))
+        ttk.Label(whitelist_frame, text="留空=全部；示例：.jpg .png,.mp4").pack(side="left")
 
         option_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
         option_frame.pack(fill="x")
@@ -146,6 +154,9 @@ class MonthOrganizerGUI:
         ]
         if self.remove_empty_var.get():
             cmd.append("--remove-empty-dirs")
+        whitelist_text = self.ext_whitelist_var.get().strip()
+        if whitelist_text:
+            cmd.extend(["--ext-whitelist", whitelist_text])
         return cmd
 
     def _run_organize(self) -> None:
@@ -238,11 +249,13 @@ class MonthOrganizerGUI:
             total = int(payload.get("total", 0))
             moved = int(payload.get("moved", 0))
             skipped = int(payload.get("skipped_same_files", 0))
+            filtered = int(payload.get("filtered_by_whitelist", 0))
             renamed = int(payload.get("renamed", 0))
             failed = int(payload.get("failed", 0))
             removed = int(payload.get("removed_empty_dirs", 0))
             self._append_log(
-                f"[结果] 总计 {total}，成功 {moved}，跳过同文件 {skipped}，重命名 {renamed}，失败 {failed}，删除空目录 {removed}"
+                f"[结果] 总计 {total}，成功 {moved}，跳过同文件 {skipped}，"
+                f"白名单过滤 {filtered}，重命名 {renamed}，失败 {failed}，删除空目录 {removed}"
             )
             return
 
