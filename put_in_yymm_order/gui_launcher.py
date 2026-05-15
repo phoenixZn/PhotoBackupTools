@@ -88,7 +88,7 @@ class MonthOrganizerGUI:
         ).pack(side="left", padx=(16, 0))
         ttk.Checkbutton(
             option_frame,
-            text="自动保存配置",
+            text=f"自动保存配置: {self._settings_path().name}",
             variable=self.auto_save_var,
         ).pack(side="left", padx=(16, 0))
 
