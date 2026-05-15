@@ -22,6 +22,7 @@ from tkinter import filedialog, messagebox, ttk
 
 
 EVENT_PREFIX = "__EVENT__ "
+SETTINGS_FILE_NAME = "gui_settings.json"
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD  # type: ignore
@@ -44,12 +45,15 @@ class MonthOrganizerGUI:
         self.progress_var = tk.StringVar(value="进度：0 / 0")
         self.remove_empty_var = tk.BooleanVar(value=False)
         self.warn_error_only_var = tk.BooleanVar(value=False)
+        self.auto_save_var = tk.BooleanVar(value=True)
 
         self._event_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self._process: subprocess.Popen[str] | None = None
         self._subprocess_encoding = locale.getpreferredencoding(False) or "utf-8"
 
         self._build_ui()
+        self._load_settings()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._poll_queue)
 
     def _build_ui(self) -> None:
@@ -79,6 +83,11 @@ class MonthOrganizerGUI:
             option_frame,
             text="仅显示警告/错误",
             variable=self.warn_error_only_var,
+        ).pack(side="left", padx=(16, 0))
+        ttk.Checkbutton(
+            option_frame,
+            text="自动保存配置",
+            variable=self.auto_save_var,
         ).pack(side="left", padx=(16, 0))
 
         progress_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
@@ -141,6 +150,76 @@ class MonthOrganizerGUI:
 
     def _set_running(self, running: bool) -> None:
         self.run_button.configure(state=("disabled" if running else "normal"))
+
+    def _settings_path(self) -> Path:
+        # 配置文件与 GUI 脚本同目录，方便打包与迁移。
+        return Path(__file__).resolve().parent / SETTINGS_FILE_NAME
+
+    def _default_settings(self) -> dict[str, object]:
+        return {
+            "root_dir": "",
+            "ext_whitelist": "",
+            "remove_empty_dirs": False,
+            "warn_error_only": False,
+            "auto_save": True,
+        }
+
+    def _collect_current_settings(self) -> dict[str, object]:
+        return {
+            "root_dir": self.root_path_var.get().strip(),
+            "ext_whitelist": self.ext_whitelist_var.get().strip(),
+            "remove_empty_dirs": self.remove_empty_var.get(),
+            "warn_error_only": self.warn_error_only_var.get(),
+            "auto_save": self.auto_save_var.get(),
+        }
+
+    def _apply_settings(self, settings: dict[str, object]) -> None:
+        self.root_path_var.set(str(settings.get("root_dir", "") or ""))
+        self.ext_whitelist_var.set(str(settings.get("ext_whitelist", "") or ""))
+        self.remove_empty_var.set(bool(settings.get("remove_empty_dirs", False)))
+        self.warn_error_only_var.set(bool(settings.get("warn_error_only", False)))
+        self.auto_save_var.set(bool(settings.get("auto_save", True)))
+
+    def _save_settings(self) -> None:
+        settings_path = self._settings_path()
+        payload = self._collect_current_settings()
+        # 使用 UTF-8 JSON，兼顾中文可读性与跨平台解析稳定性。
+        settings_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _load_settings(self) -> None:
+        settings_path = self._settings_path()
+        defaults = self._default_settings()
+        if not settings_path.exists():
+            self._apply_settings(defaults)
+            # 首次启动自动生成模板，避免用户手工创建配置文件。
+            self._save_settings()
+            self._append_log(f"已创建默认配置：{settings_path.name}")
+            return
+
+        try:
+            raw = settings_path.read_text(encoding="utf-8").strip()
+            loaded = json.loads(raw) if raw else {}
+            if not isinstance(loaded, dict):
+                raise ValueError("配置根节点必须是 JSON 对象。")
+            merged = {**defaults, **loaded}
+            self._apply_settings(merged)
+            self._append_log(f"已加载配置：{settings_path.name}")
+        except Exception as exc:
+            self._apply_settings(defaults)
+            self._append_log(f"[警告] 配置读取失败，已使用默认设置：{exc}")
+
+    def _on_close(self) -> None:
+        # 统一在窗口关闭时自动保存，避免运行中频繁写盘。
+        if self.auto_save_var.get():
+            try:
+                self._save_settings()
+                self._append_log(f"配置已保存：{self._settings_path().name}")
+            except Exception as exc:
+                messagebox.showwarning("保存配置失败", f"自动保存配置失败：{exc}")
+        self.root.destroy()
 
     def _build_command(self, root_dir: Path) -> list[str]:
         script_path = Path(__file__).resolve().parent / "organize_by_month.py"
