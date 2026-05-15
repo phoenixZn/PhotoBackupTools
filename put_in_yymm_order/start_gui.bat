@@ -5,9 +5,9 @@ cd /d "%~dp0"
 
 where py >nul 2>nul
 if %errorlevel%==0 (
-    py -3 gui_launcher.py
+    py -3 gui_launcher.py %*
 ) else (
-    python gui_launcher.py
+    python gui_launcher.py %*
 )
 
 endlocal

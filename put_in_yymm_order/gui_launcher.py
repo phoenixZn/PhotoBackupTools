@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import locale
 import queue
@@ -35,10 +36,11 @@ except Exception:
 
 
 class MonthOrganizerGUI:
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: tk.Tk, *, settings_file: str = SETTINGS_FILE_NAME) -> None:
         self.root = root
         self.root.title("按月目录整理工具")
         self.root.geometry("860x560")
+        self._settings_file = settings_file
 
         self.root_path_var = tk.StringVar()
         self.ext_whitelist_var = tk.StringVar()
@@ -152,8 +154,11 @@ class MonthOrganizerGUI:
         self.run_button.configure(state=("disabled" if running else "normal"))
 
     def _settings_path(self) -> Path:
-        # 配置文件与 GUI 脚本同目录，方便打包与迁移。
-        return Path(__file__).resolve().parent / SETTINGS_FILE_NAME
+        # 若传入相对路径，则基于 GUI 脚本目录解析，便于双击脚本时定位稳定。
+        configured_path = Path(self._settings_file).expanduser()
+        if configured_path.is_absolute():
+            return configured_path
+        return Path(__file__).resolve().parent / configured_path
 
     def _default_settings(self) -> dict[str, object]:
         return {
@@ -385,9 +390,24 @@ def create_root() -> tk.Tk:
     return tk.Tk()
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="按月目录整理 GUI 启动器。")
+    parser.add_argument(
+        "--settings-file",
+        default=SETTINGS_FILE_NAME,
+        help=(
+            "指定 GUI 配置文件路径（默认: gui_settings.json）。"
+            "可传文件名或绝对路径。"
+        ),
+    )
+    return parser
+
+
 def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
     root = create_root()
-    MonthOrganizerGUI(root)
+    MonthOrganizerGUI(root, settings_file=args.settings_file)
     root.mainloop()
 
 
