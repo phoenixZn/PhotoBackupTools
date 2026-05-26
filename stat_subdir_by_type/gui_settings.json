@@ -1,0 +1,6 @@
+{
+  "root_dir": "E:/PhotoLib/Mate60/DCIM_YM",
+  "ext_whitelist": ".jpg .mp4",
+  "remove_old_stats": false,
+  "auto_save": true
+}
