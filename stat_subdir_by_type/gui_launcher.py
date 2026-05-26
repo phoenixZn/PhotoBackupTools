@@ -21,6 +21,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from stat_subdir_by_type import remove_old_stat_files
+
 
 EVENT_PREFIX = "__EVENT__ "
 SETTINGS_FILE_NAME = "gui_settings.json"
@@ -103,6 +105,11 @@ class SubdirStatsGUI:
         action_frame.pack(fill="x")
         self.run_button = ttk.Button(action_frame, text="开始统计", command=self._run_stats)
         self.run_button.pack(side="left")
+        ttk.Button(
+            action_frame,
+            text="清理统计 txt",
+            command=self._cleanup_stat_files,
+        ).pack(side="left", padx=(12, 0))
 
         log_frame = ttk.Frame(self.root, padding=(12, 0, 12, 12))
         log_frame.pack(fill="both", expand=True)
@@ -227,6 +234,32 @@ class SubdirStatsGUI:
         if whitelist_text:
             cmd.extend(["--ext-whitelist", whitelist_text])
         return cmd
+
+    def _cleanup_stat_files(self) -> None:
+        root_input = self.root_path_var.get().strip()
+        if not root_input:
+            messagebox.showwarning("参数缺失", "请先选择根目录。")
+            return
+
+        root_dir = Path(root_input).expanduser().resolve()
+        if not root_dir.exists() or not root_dir.is_dir():
+            messagebox.showwarning("目录无效", "请选择一个存在的目录。")
+            return
+
+        confirmed = messagebox.askyesno(
+            "确认清理",
+            f"将删除该目录下所有 统计_*.txt 文件：\n{root_dir}\n是否继续？",
+        )
+        if not confirmed:
+            self._append_log("用户取消了清理统计文件。")
+            return
+
+        try:
+            removed = remove_old_stat_files(root_dir)
+            self._append_log(f"已清理 {removed} 个统计 txt 文件：{root_dir}")
+        except Exception as exc:
+            messagebox.showerror("清理失败", str(exc))
+            self._append_log(f"[错误] 清理失败：{exc}")
 
     def _run_stats(self) -> None:
         root_input = self.root_path_var.get().strip()
