@@ -52,6 +52,7 @@ class MonthOrganizerGUI:
         self._settings_file = settings_file
 
         self.root_path_var = tk.StringVar()
+        self.output_dir_var = tk.StringVar()
         self.ext_whitelist_var = tk.StringVar()
         self.group_by_var = tk.StringVar(value="month")
         self.progress_var = tk.StringVar(value="进度：0 / 0")
@@ -76,6 +77,14 @@ class MonthOrganizerGUI:
         self.path_entry = ttk.Entry(top_frame, textvariable=self.root_path_var)
         self.path_entry.pack(side="left", fill="x", expand=True, padx=(6, 8))
         ttk.Button(top_frame, text="浏览", command=self._select_root_dir).pack(side="left")
+
+        output_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
+        output_frame.pack(fill="x")
+        ttk.Label(output_frame, text="输出目录：").pack(side="left")
+        self.output_entry = ttk.Entry(output_frame, textvariable=self.output_dir_var)
+        self.output_entry.pack(side="left", fill="x", expand=True, padx=(6, 8))
+        ttk.Button(output_frame, text="浏览", command=self._select_output_dir).pack(side="left")
+        ttk.Label(output_frame, text="留空=默认 {根目录名}_{Y|YM|YMD}").pack(side="left", padx=(8, 0))
 
         whitelist_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
         whitelist_frame.pack(fill="x")
@@ -162,6 +171,11 @@ class MonthOrganizerGUI:
         if selected:
             self.root_path_var.set(selected)
 
+    def _select_output_dir(self) -> None:
+        selected = filedialog.askdirectory(title="选择输出目录")
+        if selected:
+            self.output_dir_var.set(selected)
+
     def _append_log(self, message: str) -> None:
         self.log_text.configure(state="normal")
         self.log_text.insert("end", message + "\n")
@@ -194,6 +208,7 @@ class MonthOrganizerGUI:
     def _default_settings(self) -> dict[str, object]:
         return {
             "root_dir": "",
+            "output_dir": "",
             "ext_whitelist": "",
             "group_by": "month",
             "remove_empty_dirs": False,
@@ -204,6 +219,7 @@ class MonthOrganizerGUI:
     def _collect_current_settings(self) -> dict[str, object]:
         return {
             "root_dir": self.root_path_var.get().strip(),
+            "output_dir": self.output_dir_var.get().strip(),
             "ext_whitelist": self.ext_whitelist_var.get().strip(),
             "group_by": self.group_by_var.get().strip() or "month",
             "remove_empty_dirs": self.remove_empty_var.get(),
@@ -213,6 +229,7 @@ class MonthOrganizerGUI:
 
     def _apply_settings(self, settings: dict[str, object]) -> None:
         self.root_path_var.set(str(settings.get("root_dir", "") or ""))
+        self.output_dir_var.set(str(settings.get("output_dir", "") or ""))
         self.ext_whitelist_var.set(str(settings.get("ext_whitelist", "") or ""))
         group_by = str(settings.get("group_by", "month") or "month").lower()
         if group_by not in GROUP_BY_VALUE_TO_LABEL:
@@ -278,6 +295,9 @@ class MonthOrganizerGUI:
         ]
         if self.remove_empty_var.get():
             cmd.append("--remove-empty-dirs")
+        output_text = self.output_dir_var.get().strip()
+        if output_text:
+            cmd.extend(["--output", output_text])
         whitelist_text = self.ext_whitelist_var.get().strip()
         if whitelist_text:
             cmd.extend(["--ext-whitelist", whitelist_text])

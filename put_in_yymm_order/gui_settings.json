@@ -1,5 +1,6 @@
 {
   "root_dir": "",
+  "output_dir": "E:\\PhotoLib\\Mate60\\DCIM_YM",
   "ext_whitelist": "",
   "group_by": "month",
   "remove_empty_dirs": false,
