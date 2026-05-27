@@ -1,11 +1,11 @@
 """
-目录整理 GUI 启动器（tkinter，支持按年/按月/按日）。
+子目录文件类型统计 GUI 启动器（tkinter）。
 
 使用说明（示例）：
 1) 启动界面：
    python gui_launcher.py
-2) 在界面中选择/拖入根目录后，选择整理模式并点击“开始整理”。
-3) GUI 只负责参数收集与结果展示，实际整理由 organize_by_month.py 执行。
+2) 在界面中选择/拖入根目录后，点击“开始统计”。
+3) GUI 只负责参数收集与结果展示，实际统计由 stat_subdir_by_type.py 执行。
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from stat_subdir_by_type import remove_old_stat_files
+
 
 EVENT_PREFIX = "__EVENT__ "
 SETTINGS_FILE_NAME = "gui_settings.json"
@@ -35,29 +37,17 @@ except Exception:
     TkinterDnD = None
 
 
-GROUP_BY_LABEL_TO_VALUE = {
-    "按年": "year",
-    "按月": "month",
-    "按日": "day",
-}
-# 配置文件存英文值，界面显示中文标签。
-GROUP_BY_VALUE_TO_LABEL = {value: key for key, value in GROUP_BY_LABEL_TO_VALUE.items()}
-
-
-class MonthOrganizerGUI:
+class SubdirStatsGUI:
     def __init__(self, root: tk.Tk, *, settings_file: str = SETTINGS_FILE_NAME) -> None:
         self.root = root
-        self.root.title("目录整理工具")
-        self.root.geometry("860x560")
+        self.root.title("子目录文件类型统计工具")
+        self.root.geometry("860x520")
         self._settings_file = settings_file
 
         self.root_path_var = tk.StringVar()
-        self.output_dir_var = tk.StringVar()
         self.ext_whitelist_var = tk.StringVar()
-        self.group_by_var = tk.StringVar(value="month")
         self.progress_var = tk.StringVar(value="进度：0 / 0")
-        self.remove_empty_var = tk.BooleanVar(value=False)
-        self.warn_error_only_var = tk.BooleanVar(value=False)
+        self.remove_old_stats_var = tk.BooleanVar(value=False)
         self.auto_save_var = tk.BooleanVar(value=True)
 
         self._event_queue: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -78,13 +68,12 @@ class MonthOrganizerGUI:
         self.path_entry.pack(side="left", fill="x", expand=True, padx=(6, 8))
         ttk.Button(top_frame, text="浏览", command=self._select_root_dir).pack(side="left")
 
-        output_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
-        output_frame.pack(fill="x")
-        ttk.Label(output_frame, text="输出目录：").pack(side="left")
-        self.output_entry = ttk.Entry(output_frame, textvariable=self.output_dir_var)
-        self.output_entry.pack(side="left", fill="x", expand=True, padx=(6, 8))
-        ttk.Button(output_frame, text="浏览", command=self._select_output_dir).pack(side="left")
-        ttk.Label(output_frame, text="留空=默认 {根目录名}_{Y|YM|YMD}").pack(side="left", padx=(8, 0))
+        hint_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
+        hint_frame.pack(fill="x")
+        ttk.Label(
+            hint_frame,
+            text="将在根目录为每个一级子目录生成 统计_{子目录名}_扩展名(数量).txt",
+        ).pack(side="left")
 
         whitelist_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
         whitelist_frame.pack(fill="x")
@@ -93,35 +82,13 @@ class MonthOrganizerGUI:
         whitelist_entry.pack(side="left", fill="x", expand=True, padx=(6, 8))
         ttk.Label(whitelist_frame, text="留空=全部；示例：.jpg .png,.mp4").pack(side="left")
 
-        group_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
-        group_frame.pack(fill="x")
-        ttk.Label(group_frame, text="分目录模式：").pack(side="left")
-        self.group_by_combo = ttk.Combobox(
-            group_frame,
-            state="readonly",
-            values=list(GROUP_BY_LABEL_TO_VALUE.keys()),
-            width=14,
-        )
-        self.group_by_combo.pack(side="left", padx=(6, 8))
-        self.group_by_combo.set("按月")
-        self.group_by_combo.bind("<<ComboboxSelected>>", self._on_group_mode_changed)
-        ttk.Label(
-            group_frame,
-            text="按年=YYYY，按月=YYYY_MM，按日=YYYY_MM_DD",
-        ).pack(side="left")
-
         option_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
         option_frame.pack(fill="x")
         ttk.Checkbutton(
             option_frame,
-            text="整理完成后删除原目录下空子目录",
-            variable=self.remove_empty_var,
+            text="执行前删除根目录下已有的 统计_*.txt",
+            variable=self.remove_old_stats_var,
         ).pack(side="left")
-        ttk.Checkbutton(
-            option_frame,
-            text="仅显示警告/错误",
-            variable=self.warn_error_only_var,
-        ).pack(side="left", padx=(16, 0))
         ttk.Checkbutton(
             option_frame,
             text=f"自动保存配置: {self._settings_path().name}",
@@ -136,12 +103,17 @@ class MonthOrganizerGUI:
 
         action_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
         action_frame.pack(fill="x")
-        self.run_button = ttk.Button(action_frame, text="开始整理", command=self._run_organize)
+        self.run_button = ttk.Button(action_frame, text="开始统计", command=self._run_stats)
         self.run_button.pack(side="left")
+        ttk.Button(
+            action_frame,
+            text="清理统计 txt",
+            command=self._cleanup_stat_files,
+        ).pack(side="left", padx=(12, 0))
 
         log_frame = ttk.Frame(self.root, padding=(12, 0, 12, 12))
         log_frame.pack(fill="both", expand=True)
-        self.log_text = tk.Text(log_frame, height=20, wrap="word")
+        self.log_text = tk.Text(log_frame, height=18, wrap="word")
         self.log_text.pack(side="left", fill="both", expand=True)
         scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
         scrollbar.pack(side="right", fill="y")
@@ -167,14 +139,9 @@ class MonthOrganizerGUI:
             messagebox.showwarning("无效目录", "拖入内容不是有效目录，请重新选择。")
 
     def _select_root_dir(self) -> None:
-        selected = filedialog.askdirectory(title="选择待整理根目录")
+        selected = filedialog.askdirectory(title="选择待统计根目录")
         if selected:
             self.root_path_var.set(selected)
-
-    def _select_output_dir(self) -> None:
-        selected = filedialog.askdirectory(title="选择输出目录")
-        if selected:
-            self.output_dir_var.set(selected)
 
     def _append_log(self, message: str) -> None:
         self.log_text.configure(state="normal")
@@ -182,24 +149,10 @@ class MonthOrganizerGUI:
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
-    def _is_warn_or_error_message(self, message: str) -> bool:
-        text = message.strip()
-        if not text:
-            return False
-        prefixes = ("[警告]", "[错误]", "[stderr]", "[fatal]", "Fail:")
-        if text.lower().startswith("fatal"):
-            return True
-        return text.startswith(prefixes)
-
-    def _on_group_mode_changed(self, _event: tk.Event | None = None) -> None:
-        selected = self.group_by_combo.get().strip()
-        self.group_by_var.set(GROUP_BY_LABEL_TO_VALUE.get(selected, "month"))
-
     def _set_running(self, running: bool) -> None:
         self.run_button.configure(state=("disabled" if running else "normal"))
 
     def _settings_path(self) -> Path:
-        # 若传入相对路径，则基于 GUI 脚本目录解析，便于双击脚本时定位稳定。
         configured_path = Path(self._settings_file).expanduser()
         if configured_path.is_absolute():
             return configured_path
@@ -208,42 +161,28 @@ class MonthOrganizerGUI:
     def _default_settings(self) -> dict[str, object]:
         return {
             "root_dir": "",
-            "output_dir": "",
             "ext_whitelist": "",
-            "group_by": "month",
-            "remove_empty_dirs": False,
-            "warn_error_only": False,
+            "remove_old_stats": False,
             "auto_save": True,
         }
 
     def _collect_current_settings(self) -> dict[str, object]:
         return {
             "root_dir": self.root_path_var.get().strip(),
-            "output_dir": self.output_dir_var.get().strip(),
             "ext_whitelist": self.ext_whitelist_var.get().strip(),
-            "group_by": self.group_by_var.get().strip() or "month",
-            "remove_empty_dirs": self.remove_empty_var.get(),
-            "warn_error_only": self.warn_error_only_var.get(),
+            "remove_old_stats": self.remove_old_stats_var.get(),
             "auto_save": self.auto_save_var.get(),
         }
 
     def _apply_settings(self, settings: dict[str, object]) -> None:
         self.root_path_var.set(str(settings.get("root_dir", "") or ""))
-        self.output_dir_var.set(str(settings.get("output_dir", "") or ""))
         self.ext_whitelist_var.set(str(settings.get("ext_whitelist", "") or ""))
-        group_by = str(settings.get("group_by", "month") or "month").lower()
-        if group_by not in GROUP_BY_VALUE_TO_LABEL:
-            group_by = "month"
-        self.group_by_var.set(group_by)
-        self.group_by_combo.set(GROUP_BY_VALUE_TO_LABEL[group_by])
-        self.remove_empty_var.set(bool(settings.get("remove_empty_dirs", False)))
-        self.warn_error_only_var.set(bool(settings.get("warn_error_only", False)))
+        self.remove_old_stats_var.set(bool(settings.get("remove_old_stats", False)))
         self.auto_save_var.set(bool(settings.get("auto_save", True)))
 
     def _save_settings(self) -> None:
         settings_path = self._settings_path()
         payload = self._collect_current_settings()
-        # 使用 UTF-8 JSON，兼顾中文可读性与跨平台解析稳定性。
         settings_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -254,7 +193,6 @@ class MonthOrganizerGUI:
         defaults = self._default_settings()
         if not settings_path.exists():
             self._apply_settings(defaults)
-            # 首次启动自动生成模板，避免用户手工创建配置文件。
             self._save_settings()
             self._append_log(f"已创建默认配置：{settings_path.name}")
             return
@@ -272,7 +210,6 @@ class MonthOrganizerGUI:
             self._append_log(f"[警告] 配置读取失败，已使用默认设置：{exc}")
 
     def _on_close(self) -> None:
-        # 统一在窗口关闭时自动保存，避免运行中频繁写盘。
         if self.auto_save_var.get():
             try:
                 self._save_settings()
@@ -282,28 +219,49 @@ class MonthOrganizerGUI:
         self.root.destroy()
 
     def _build_command(self, root_dir: Path) -> list[str]:
-        script_path = Path(__file__).resolve().parent / "organize_by_month.py"
+        script_path = Path(__file__).resolve().parent / "stat_subdir_by_type.py"
         cmd = [
             sys.executable,
             str(script_path),
             "--root",
             str(root_dir),
-            "--group-by",
-            self.group_by_var.get(),
             "--yes",
             "--json-events",
         ]
-        if self.remove_empty_var.get():
-            cmd.append("--remove-empty-dirs")
-        output_text = self.output_dir_var.get().strip()
-        if output_text:
-            cmd.extend(["--output", output_text])
+        if self.remove_old_stats_var.get():
+            cmd.append("--remove-old-stats")
         whitelist_text = self.ext_whitelist_var.get().strip()
         if whitelist_text:
             cmd.extend(["--ext-whitelist", whitelist_text])
         return cmd
 
-    def _run_organize(self) -> None:
+    def _cleanup_stat_files(self) -> None:
+        root_input = self.root_path_var.get().strip()
+        if not root_input:
+            messagebox.showwarning("参数缺失", "请先选择根目录。")
+            return
+
+        root_dir = Path(root_input).expanduser().resolve()
+        if not root_dir.exists() or not root_dir.is_dir():
+            messagebox.showwarning("目录无效", "请选择一个存在的目录。")
+            return
+
+        confirmed = messagebox.askyesno(
+            "确认清理",
+            f"将删除该目录下所有 统计_*.txt 文件：\n{root_dir}\n是否继续？",
+        )
+        if not confirmed:
+            self._append_log("用户取消了清理统计文件。")
+            return
+
+        try:
+            removed = remove_old_stat_files(root_dir)
+            self._append_log(f"已清理 {removed} 个统计 txt 文件：{root_dir}")
+        except Exception as exc:
+            messagebox.showerror("清理失败", str(exc))
+            self._append_log(f"[错误] 清理失败：{exc}")
+
+    def _run_stats(self) -> None:
         root_input = self.root_path_var.get().strip()
         if not root_input:
             messagebox.showwarning("参数缺失", "请先选择根目录。")
@@ -316,16 +274,16 @@ class MonthOrganizerGUI:
 
         confirmed = messagebox.askyesno(
             "安全确认",
-            "此操作将移动所有文件到目标时间目录，是否继续？",
+            "将在根目录为每个一级子目录生成统计 txt 文件，是否继续？",
         )
         if not confirmed:
-            self._append_log("用户取消了本次整理。")
+            self._append_log("用户取消了本次统计。")
             return
 
         self.progressbar.configure(value=0, maximum=100)
         self.progress_var.set("进度：0 / 0")
         self._set_running(True)
-        self._append_log(f"开始执行：{root_dir}（模式：{self.group_by_var.get()}）")
+        self._append_log(f"开始执行：{root_dir}")
 
         cmd = self._build_command(root_dir)
         thread = threading.Thread(target=self._run_subprocess_worker, args=(cmd,), daemon=True)
@@ -378,8 +336,6 @@ class MonthOrganizerGUI:
         event_type = payload.get("event")
         if event_type == "log":
             message = str(payload.get("message", ""))
-            if self.warn_error_only_var.get() and not self._is_warn_or_error_message(message):
-                return
             self._append_log(message)
             return
 
@@ -391,15 +347,13 @@ class MonthOrganizerGUI:
 
         if event_type == "done":
             total = int(payload.get("total", 0))
-            moved = int(payload.get("moved", 0))
-            skipped = int(payload.get("skipped_same_files", 0))
-            filtered = int(payload.get("filtered_by_whitelist", 0))
-            renamed = int(payload.get("renamed", 0))
+            generated = int(payload.get("generated", 0))
+            empty_subdirs = int(payload.get("empty_subdirs", 0))
             failed = int(payload.get("failed", 0))
-            removed = int(payload.get("removed_empty_dirs", 0))
+            removed = int(payload.get("removed_old_stats", 0))
             self._append_log(
-                f"[结果] 总计 {total}，成功 {moved}，跳过同文件 {skipped}，"
-                f"白名单过滤 {filtered}，重命名 {renamed}，失败 {failed}，删除空目录 {removed}"
+                f"[结果] 子目录 {total} 个，生成 {generated} 个统计文件，"
+                f"空子目录 {empty_subdirs}，失败 {failed}，清理旧文件 {removed}"
             )
             return
 
@@ -429,8 +383,6 @@ class MonthOrganizerGUI:
                 if event_type == "stdout":
                     self._handle_event_line(content)
                 elif event_type == "log":
-                    if self.warn_error_only_var.get() and not self._is_warn_or_error_message(content):
-                        continue
                     self._append_log(content)
                 elif event_type == "done":
                     self._set_running(False)
@@ -451,7 +403,7 @@ def create_root() -> tk.Tk:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="目录整理 GUI 启动器（按年/按月/按日）。")
+    parser = argparse.ArgumentParser(description="子目录文件类型统计 GUI 启动器。")
     parser.add_argument(
         "--settings-file",
         default=SETTINGS_FILE_NAME,
@@ -467,7 +419,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     root = create_root()
-    MonthOrganizerGUI(root, settings_file=args.settings_file)
+    SubdirStatsGUI(root, settings_file=args.settings_file)
     root.mainloop()
 
 

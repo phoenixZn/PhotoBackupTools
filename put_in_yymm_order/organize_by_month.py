@@ -6,7 +6,9 @@
    python organize_by_month.py --root "D:/demo/source_dir"
 2) 跳过确认并删除空目录（按年）：
    python organize_by_month.py --root "D:/demo/source_dir" --yes --remove-empty-dirs --group-by year
-3) 给 GUI 使用的结构化事件输出（按日）：
+3) 指定输出目录（跳过默认后缀命名）：
+   python organize_by_month.py --root "D:/demo/source_dir" --output "D:/demo/archive" --yes
+4) 给 GUI 使用的结构化事件输出（按日）：
    python organize_by_month.py --root "D:/demo/source_dir" --yes --json-events --group-by day
 """
 
@@ -73,10 +75,31 @@ def emit_event(event_type: str, payload: dict, *, json_events: bool = False) -> 
     print(f"{EVENT_PREFIX}{json.dumps(body, ensure_ascii=True)}", flush=True)
 
 
-def confirm_operation(root_dir: Path, *, group_by: GroupByMode) -> bool:
+def resolve_backup_root(
+    root_dir: Path,
+    *,
+    group_by: GroupByMode,
+    output_dir: Path | None,
+) -> Path:
+    """解析文件归档根目录：指定有效输出目录时直接使用，否则按模式后缀命名。"""
+    if output_dir is not None:
+        resolved = output_dir.expanduser().resolve()
+        if resolved.exists() and not resolved.is_dir():
+            raise ValueError(f"输出目录不是有效目录：{resolved}")
+        return resolved
+    return root_dir.parent / f"{root_dir.name}_{GROUP_BY_FOLDER_SUFFIX[group_by]}"
+
+
+def confirm_operation(
+    root_dir: Path,
+    *,
+    group_by: GroupByMode,
+    backup_root: Path,
+) -> bool:
     mode_label = GROUP_BY_LABELS[group_by]
     prompt = (
         f"将整理目录：{root_dir}\n"
+        f"输出目录：{backup_root}\n"
         f"整理模式：{mode_label}\n"
         "此操作将移动所有文件到目标时间目录，是否继续？[y/N]: "
     )
@@ -229,6 +252,7 @@ def organize_files(
     root_dir: Path,
     *,
     group_by: GroupByMode,
+    output_dir: Path | None,
     remove_empty_dirs: bool,
     ext_whitelist: set[str],
     command_line_text: str,
@@ -236,8 +260,7 @@ def organize_files(
     json_events: bool = False,
 ) -> RunStats:
     stats = RunStats()
-    # 按模式写入不同后缀目录，避免不同整理策略互相覆盖结果。
-    backup_root = root_dir.parent / f"{root_dir.name}_{GROUP_BY_FOLDER_SUFFIX[group_by]}"
+    backup_root = resolve_backup_root(root_dir, group_by=group_by, output_dir=output_dir)
     backup_root.mkdir(parents=True, exist_ok=True)
     run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     all_log_lines: List[str] = []
@@ -251,6 +274,7 @@ def organize_files(
     log_line(f"CommandLine: {command_line_text}")
     log_line(f"Arguments: {parsed_args_text}")
     log_line(f"GroupBy: {group_by} ({GROUP_BY_LABELS[group_by]})")
+    log_line(f"BackupRoot: {backup_root}")
 
     files = iter_all_files(root_dir)
     stats.total_files = len(files)
@@ -441,6 +465,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="将目录中的文件按修改时间（年/月/日）整理到同级备份目录。")
     parser.add_argument("--root", required=True, help="待整理的根目录路径")
     parser.add_argument(
+        "--output",
+        default="",
+        help=(
+            "输出目录（可选）。指定有效目录时直接使用该路径；"
+            "未指定时默认使用 {根目录名}_{Y|YM|YMD} 同级目录"
+        ),
+    )
+    parser.add_argument(
         "--group-by",
         default="month",
         choices=["year", "month", "day"],
@@ -480,8 +512,27 @@ def main() -> int:
         print(f"错误：不是目录：{root_dir}", file=sys.stderr)
         return 2
 
+    output_dir: Path | None = None
+    output_text = args.output.strip()
+    if output_text:
+        output_dir = Path(output_text)
+
+    try:
+        backup_root = resolve_backup_root(
+            root_dir,
+            group_by=args.group_by,
+            output_dir=output_dir,
+        )
+    except ValueError as exc:
+        print(f"错误：{exc}", file=sys.stderr)
+        return 2
+
     if not args.yes:
-        if not confirm_operation(root_dir, group_by=args.group_by):
+        if not confirm_operation(
+            root_dir,
+            group_by=args.group_by,
+            backup_root=backup_root,
+        ):
             print("已取消操作。")
             return 0
 
@@ -494,6 +545,7 @@ def main() -> int:
             root_dir,
             remove_empty_dirs=args.remove_empty_dirs,
             group_by=args.group_by,
+            output_dir=output_dir,
             ext_whitelist=ext_whitelist,
             command_line_text=command_line_text,
             parsed_args_text=parsed_args_text,
