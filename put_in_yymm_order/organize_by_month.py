@@ -237,7 +237,8 @@ def save_run_logs(
         month_log_file = bucket_dir / build_run_log_file_name(
             "ym_moves", run_stamp, len(lines)
         )
-        month_log_file.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+        header = f"RootDir: {root_dir}"
+        month_log_file.write_text(header + "\n" + "\n".join(lines) + "\n", encoding="utf-8-sig")
         bucket_log_files.append(month_log_file)
     return root_log_file, bucket_log_files
 
