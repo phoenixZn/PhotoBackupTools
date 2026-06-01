@@ -44,8 +44,8 @@ class FavouriteFilesApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("喜爱文件挑选复制工具")
-        self.root.geometry("1280x900")
-        self.root.minsize(960, 700)
+        self.root.geometry("1400x920")
+        self.root.minsize(1000, 720)
 
         self.base_dir: Optional[Path] = None
         self.entries: list[ImageEntry] = []
@@ -67,7 +67,7 @@ class FavouriteFilesApp:
 
     def _build_ui(self) -> None:
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(2, weight=1)
+        self.root.rowconfigure(1, weight=1)
 
         top = ttk.Frame(self.root, padding=(10, 8, 10, 4))
         top.grid(row=0, column=0, sticky="ew")
@@ -130,21 +130,65 @@ class FavouriteFilesApp:
             target_frame, text="带路径复制", variable=self.keep_path_var
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
-        middle = ttk.Frame(self.root, padding=(10, 0, 10, 4))
-        middle.grid(row=1, column=0, sticky="nsew")
-        middle.columnconfigure(0, weight=1)
-        middle.rowconfigure(0, weight=1)
+        # 主区：左侧大预览 + 右侧标记变化边栏
+        main = ttk.Frame(self.root, padding=(10, 0, 10, 4))
+        main.grid(row=1, column=0, sticky="nsew")
+        main.columnconfigure(0, weight=1)
+        main.columnconfigure(1, weight=0, minsize=272)
+        main.rowconfigure(0, weight=1)
+
+        preview_frame = ttk.Frame(main)
+        preview_frame.grid(row=0, column=0, sticky="nsew")
+        preview_frame.columnconfigure(0, weight=1)
+        preview_frame.rowconfigure(0, weight=1)
 
         self.image_label = ttk.Label(
-            middle, anchor="center", text="请选择 Base 目录并开始浏览照片。"
+            preview_frame,
+            anchor="center",
+            text="请选择 Base 目录并开始浏览照片。",
         )
         self.image_label.grid(row=0, column=0, sticky="nsew")
         self.image_label.bind("<Configure>", self._on_image_area_resize)
 
+        sidebar = ttk.Frame(main)
+        sidebar.grid(row=0, column=1, sticky="ns", padx=(10, 0))
+        sidebar.columnconfigure(0, weight=1)
+        sidebar.rowconfigure(1, weight=1)
+
+        self.favourite_state_var = tk.StringVar(value="未标记喜爱")
+        self.favourite_state_label = tk.Label(
+            sidebar,
+            textvariable=self.favourite_state_var,
+            font=("Microsoft YaHei UI", 14, "bold"),
+            fg="#808080",
+            anchor="w",
+            wraplength=260,
+        )
+        self.favourite_state_label.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+
+        changes_frame = ttk.LabelFrame(sidebar, text="本次运行标记变化", padding=(6, 4))
+        changes_frame.grid(row=1, column=0, sticky="nsew")
+        changes_frame.columnconfigure(0, weight=1)
+        changes_frame.rowconfigure(1, weight=1)
+        changes_frame.rowconfigure(3, weight=1)
+
+        ttk.Label(changes_frame, text="新增标记").grid(row=0, column=0, sticky="w")
+        self.added_listbox = tk.Listbox(changes_frame, height=10, exportselection=False)
+        self.added_listbox.grid(row=1, column=0, sticky="nsew", pady=(2, 6))
+        ttk.Label(changes_frame, text="取消标记").grid(row=2, column=0, sticky="w")
+        self.removed_listbox = tk.Listbox(changes_frame, height=10, exportselection=False)
+        self.removed_listbox.grid(row=3, column=0, sticky="nsew", pady=(2, 0))
+
+        self.write_log_on_close_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            sidebar,
+            text="关闭时记录标记变化日志",
+            variable=self.write_log_on_close_var,
+        ).grid(row=2, column=0, sticky="w", pady=(8, 0))
+
         bottom = ttk.Frame(self.root, padding=(10, 4, 10, 8))
-        bottom.grid(row=2, column=0, sticky="nsew")
+        bottom.grid(row=2, column=0, sticky="ew")
         bottom.columnconfigure(0, weight=1)
-        bottom.rowconfigure(8, weight=1)
 
         self.info_var = tk.StringVar(value="文件信息：-")
         ttk.Label(bottom, textvariable=self.info_var).grid(row=0, column=0, sticky="w")
@@ -152,37 +196,8 @@ class FavouriteFilesApp:
         self.status_var = tk.StringVar(value="状态：等待选择 Base 目录")
         ttk.Label(bottom, textvariable=self.status_var).grid(row=1, column=0, sticky="w")
 
-        self.favourite_state_var = tk.StringVar(value="未标记喜爱")
-        self.favourite_state_label = tk.Label(
-            bottom,
-            textvariable=self.favourite_state_var,
-            font=("Microsoft YaHei UI", 16, "bold"),
-            fg="#808080",
-            anchor="w",
-        )
-        self.favourite_state_label.grid(row=2, column=0, sticky="w", pady=(6, 0))
-
-        self.write_log_on_close_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            bottom,
-            text="关闭窗口时记录本次标记变化日志",
-            variable=self.write_log_on_close_var,
-        ).grid(row=3, column=0, sticky="w", pady=(6, 2))
-
-        changes_frame = ttk.LabelFrame(bottom, text="本次运行标记变化")
-        changes_frame.grid(row=4, column=0, sticky="ew", pady=(6, 0))
-        changes_frame.columnconfigure(0, weight=1)
-        changes_frame.columnconfigure(1, weight=1)
-
-        ttk.Label(changes_frame, text="新增标记").grid(row=0, column=0, sticky="w", padx=(8, 0))
-        ttk.Label(changes_frame, text="取消标记").grid(row=0, column=1, sticky="w", padx=(8, 0))
-        self.added_listbox = tk.Listbox(changes_frame, height=4)
-        self.added_listbox.grid(row=1, column=0, sticky="nsew", padx=(8, 4), pady=(4, 8))
-        self.removed_listbox = tk.Listbox(changes_frame, height=4)
-        self.removed_listbox.grid(row=1, column=1, sticky="nsew", padx=(4, 8), pady=(4, 8))
-
         actions = ttk.Frame(bottom)
-        actions.grid(row=5, column=0, sticky="w", pady=(8, 0))
+        actions.grid(row=2, column=0, sticky="w", pady=(6, 0))
 
         self.prev_btn = ttk.Button(actions, text="上一张 (← / A)", command=self.show_prev)
         self.prev_btn.grid(row=0, column=0, padx=(0, 4))
@@ -210,7 +225,7 @@ class FavouriteFilesApp:
         self.backup_btn.grid(row=0, column=7, padx=(4, 0))
 
         copy_actions = ttk.Frame(bottom)
-        copy_actions.grid(row=6, column=0, sticky="w", pady=(6, 0))
+        copy_actions.grid(row=3, column=0, sticky="w", pady=(4, 0))
         self.copy_cur_btn = ttk.Button(
             copy_actions, text="CopyCurFile", command=self.on_copy_current
         )
@@ -221,16 +236,13 @@ class FavouriteFilesApp:
         self.copy_all_btn.grid(row=0, column=1)
 
         log_frame = ttk.LabelFrame(bottom, text="操作日志")
-        log_frame.grid(row=7, column=0, sticky="nsew", pady=(8, 0))
+        log_frame.grid(row=4, column=0, sticky="ew", pady=(6, 0))
         log_frame.columnconfigure(0, weight=1)
-        log_frame.rowconfigure(0, weight=1)
-        bottom.rowconfigure(7, weight=0)
-        bottom.rowconfigure(8, weight=1)
 
         self.log_text = scrolledtext.ScrolledText(
-            log_frame, height=8, state="disabled", wrap=tk.WORD
+            log_frame, height=5, state="disabled", wrap=tk.WORD
         )
-        self.log_text.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        self.log_text.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
 
     def _on_target_mode_change(self) -> None:
         is_pc = self.target_mode_var.get() == "pc"
