@@ -27,7 +27,24 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Callable, Optional
 
-from PIL import Image, ImageOps, ImageTk
+try:
+    from PIL import Image, ImageOps, ImageTk
+except ModuleNotFoundError:
+    import sys
+    import tkinter as tk
+    from tkinter import messagebox
+
+    _root = tk.Tk()
+    _root.withdraw()
+    messagebox.showerror(
+        "缺少依赖 Pillow",
+        "未安装 Pillow，无法启动本工具。\n\n"
+        "请在 favourite_files_copy_tool 目录下执行：\n"
+        "  pip install -r requirements.txt\n\n"
+        "或双击 run.bat（会自动尝试安装依赖）。",
+    )
+    _root.destroy()
+    sys.exit(1)
 
 from copy_service import copy_all_favourites, copy_current_entry
 from favourites import (
