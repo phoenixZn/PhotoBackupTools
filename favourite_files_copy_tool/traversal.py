@@ -52,6 +52,18 @@ def build_image_entries(base_dir: Path) -> list[ImageEntry]:
     ]
 
 
+def build_dir_first_indices(entries: list[ImageEntry]) -> list[int]:
+    """按 DFS 顺序，记录每个「含图子目录」在扁平列表中首张图的索引。"""
+    indices: list[int] = []
+    seen: set[Path] = set()
+    for idx, entry in enumerate(entries):
+        cdir = entry.container_dir.resolve()
+        if cdir not in seen:
+            seen.add(cdir)
+            indices.append(idx)
+    return indices
+
+
 def iter_all_directories_dfs(root: Path) -> list[Path]:
     """深度优先列出 Base 下所有目录（含 root 自身）。"""
     root = root.resolve()

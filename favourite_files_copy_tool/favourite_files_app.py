@@ -11,6 +11,7 @@
   7. 「带路径复制」勾选时保留相对 Base 的目录结构
   8. CopyCurFile 复制当前图；CopyFavouriteFiles 复制 Base 树下全部喜爱文件
   9. PC 复制不覆盖已存在同名文件，冲突信息见底部日志区
+ 10. 上一目录 / 下一目录（PgUp / PgDn）：按 DFS 顺序跳到相邻子目录的首张图
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ from favourites import (
     write_favourite_names,
     write_preview_position,
 )
-from traversal import ImageEntry, build_image_entries
+from traversal import ImageEntry, build_dir_first_indices, build_image_entries
 
 
 class FavouriteFilesApp:
@@ -59,6 +60,7 @@ class FavouriteFilesApp:
         self.current_shoot_time: Optional[str] = None
         self._render_after_id: Optional[str] = None
         self._copy_running = False
+        self.dir_first_indices: list[int] = []
 
         self._build_ui()
         self._bind_shortcuts()
@@ -203,26 +205,34 @@ class FavouriteFilesApp:
         self.prev_btn.grid(row=0, column=0, padx=(0, 4))
         self.next_btn = ttk.Button(actions, text="下一张 (→ / D)", command=self.show_next)
         self.next_btn.grid(row=0, column=1, padx=(0, 4))
+        self.prev_dir_btn = ttk.Button(
+            actions, text="上一目录 (PgUp)", command=self.show_prev_directory
+        )
+        self.prev_dir_btn.grid(row=0, column=2, padx=(0, 4))
+        self.next_dir_btn = ttk.Button(
+            actions, text="下一目录 (PgDn)", command=self.show_next_directory
+        )
+        self.next_dir_btn.grid(row=0, column=3, padx=(0, 4))
         self.toggle_btn = ttk.Button(
             actions, text="切换喜爱 (F)", command=self.toggle_favourite
         )
-        self.toggle_btn.grid(row=0, column=2, padx=(0, 4))
+        self.toggle_btn.grid(row=0, column=4, padx=(0, 4))
         self.add_btn = ttk.Button(
             actions, text="标记喜爱 (W / ↑)", command=self.add_favourite
         )
-        self.add_btn.grid(row=0, column=3, padx=(0, 4))
+        self.add_btn.grid(row=0, column=5, padx=(0, 4))
         self.remove_btn = ttk.Button(
             actions, text="取消喜爱 (S / ↓)", command=self.remove_favourite
         )
-        self.remove_btn.grid(row=0, column=4, padx=(0, 4))
+        self.remove_btn.grid(row=0, column=6, padx=(0, 4))
         self.open_btn = ttk.Button(actions, text="打开图片", command=self.open_current_image)
-        self.open_btn.grid(row=0, column=5, padx=(4, 0))
+        self.open_btn.grid(row=0, column=7, padx=(4, 0))
         self.locate_btn = ttk.Button(actions, text="定位", command=self.locate_current_image)
-        self.locate_btn.grid(row=0, column=6, padx=(4, 0))
+        self.locate_btn.grid(row=0, column=8, padx=(4, 0))
         self.backup_btn = ttk.Button(
             actions, text="备份 list", command=self.backup_favourite_list
         )
-        self.backup_btn.grid(row=0, column=7, padx=(4, 0))
+        self.backup_btn.grid(row=0, column=9, padx=(4, 0))
 
         copy_actions = ttk.Frame(bottom)
         copy_actions.grid(row=3, column=0, sticky="w", pady=(4, 0))
@@ -287,6 +297,8 @@ class FavouriteFilesApp:
         self.root.bind("<Down>", lambda _e: self.remove_favourite())
         self.root.bind("<Home>", lambda _e: self.show_first())
         self.root.bind("<End>", lambda _e: self.show_last())
+        self.root.bind("<Prior>", lambda _e: self.show_prev_directory())
+        self.root.bind("<Next>", lambda _e: self.show_next_directory())
 
     def get_target(self) -> Optional[str]:
         if self.target_mode_var.get() == "pc":
@@ -313,6 +325,7 @@ class FavouriteFilesApp:
         self.base_dir = directory.resolve()
         self.base_var.set(str(self.base_dir))
         self.entries = build_image_entries(self.base_dir)
+        self.dir_first_indices = build_dir_first_indices(self.entries)
         self.favourites_by_dir = {}
         self.initial_favourites_by_dir = {}
 
@@ -329,6 +342,7 @@ class FavouriteFilesApp:
         self.append_log(f"已加载 Base: {self.base_dir}，共 {len(self.entries)} 张图片")
 
         if not self.entries:
+            self.dir_first_indices = []
             self._clear_preview("当前 Base 下未发现可预览的图片。")
             self.status_var.set("状态：目录中无图片")
             self.subdir_var.set("-")
@@ -481,8 +495,24 @@ class FavouriteFilesApp:
             "normal" if self.base_dir and not self._copy_running else "disabled"
         )
 
+        dir_pos = self._current_directory_position()
+        prev_dir_state = (
+            "normal"
+            if has_image and dir_pos is not None and dir_pos > 0
+            else "disabled"
+        )
+        next_dir_state = (
+            "normal"
+            if has_image
+            and dir_pos is not None
+            and dir_pos < len(self.dir_first_indices) - 1
+            else "disabled"
+        )
+
         self.prev_btn.configure(state=prev_state)
         self.next_btn.configure(state=next_state)
+        self.prev_dir_btn.configure(state=prev_dir_state)
+        self.next_dir_btn.configure(state=next_dir_state)
         self.toggle_btn.configure(state=common_state)
         self.add_btn.configure(state=common_state)
         self.remove_btn.configure(state=common_state)
@@ -528,6 +558,46 @@ class FavouriteFilesApp:
         if not self.entries:
             return
         self.current_index = len(self.entries) - 1
+        self._show_current_image()
+
+    def _current_directory_position(self) -> Optional[int]:
+        """当前图所在子目录在 dir_first_indices 中的序号。"""
+        if not self.entries or not self.dir_first_indices:
+            return None
+        current_dir = self.entries[self.current_index].container_dir.resolve()
+        for pos, start_idx in enumerate(self.dir_first_indices):
+            if self.entries[start_idx].container_dir.resolve() == current_dir:
+                return pos
+        return None
+
+    def show_prev_directory(self) -> None:
+        pos = self._current_directory_position()
+        if pos is None or pos <= 0:
+            return
+        self.current_index = self.dir_first_indices[pos - 1]
+        entry = self._current_entry()
+        if entry:
+            rel = (
+                str(entry.container_dir.relative_to(self.base_dir)).replace("\\", "/")
+                if self.base_dir and entry.container_dir != self.base_dir
+                else "."
+            )
+            self.status_var.set(f"状态：切换到上一目录 -> {rel}")
+        self._show_current_image()
+
+    def show_next_directory(self) -> None:
+        pos = self._current_directory_position()
+        if pos is None or pos >= len(self.dir_first_indices) - 1:
+            return
+        self.current_index = self.dir_first_indices[pos + 1]
+        entry = self._current_entry()
+        if entry:
+            rel = (
+                str(entry.container_dir.relative_to(self.base_dir)).replace("\\", "/")
+                if self.base_dir and entry.container_dir != self.base_dir
+                else "."
+            )
+            self.status_var.set(f"状态：切换到下一目录 -> {rel}")
         self._show_current_image()
 
     def toggle_favourite(self) -> None:
