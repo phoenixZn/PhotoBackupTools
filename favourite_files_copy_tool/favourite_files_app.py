@@ -434,7 +434,7 @@ class FavouriteFilesApp:
                 image="", text=f"无法预览图片：{current_path.name}\n{exc}"
             )
             self.info_var.set(f"文件信息：{current_path.name}（加载失败）")
-            self.status_var.set("状态：加载图片失败")
+            self.append_log("状态：加载图片失败")
             self._update_controls_state()
             return
 
@@ -466,7 +466,7 @@ class FavouriteFilesApp:
                 text=f"无法预览视频：{current_path.name}\n请用「打开文件」在系统中播放。",
             )
             self.info_var.set(f"文件信息：{current_path.name}（预览失败）")
-            self.status_var.set("状态：加载视频预览失败")
+            self.append_log("状态：加载视频预览失败")
             if self.base_dir:
                 write_preview_position(self.base_dir, entry.rel_to_base)
             self._refresh_photo_info()
@@ -667,7 +667,7 @@ class FavouriteFilesApp:
                 if self.base_dir and entry.container_dir != self.base_dir
                 else "."
             )
-            self.status_var.set(f"状态：切换到上一目录 -> {rel}")
+            self.append_log(f"切换到上一目录 -> {rel}")
         self._show_current_image()
 
     def show_next_directory(self) -> None:
@@ -682,7 +682,7 @@ class FavouriteFilesApp:
                 if self.base_dir and entry.container_dir != self.base_dir
                 else "."
             )
-            self.status_var.set(f"状态：切换到下一目录 -> {rel}")
+            self.append_log(f"切换到下一目录 -> {rel}")
         self._show_current_image()
 
     def toggle_favourite(self) -> None:
@@ -693,11 +693,9 @@ class FavouriteFilesApp:
         fav = self._favourites_for(entry.container_dir)
         if name in fav:
             fav.remove(name)
-            self.status_var.set(f"状态：已取消喜爱 -> {name}")
             self.append_log(f"取消喜爱: {entry.rel_to_base}")
         else:
             fav.add(name)
-            self.status_var.set(f"状态：已标记喜爱 -> {name}")
             self.append_log(f"标记喜爱: {entry.rel_to_base}")
         self._save_favourites_for(entry.container_dir)
         self._refresh_photo_info()
@@ -710,13 +708,12 @@ class FavouriteFilesApp:
         name = entry.absolute_path.name
         fav = self._favourites_for(entry.container_dir)
         if name in fav:
-            self.status_var.set(f"状态：已是喜爱 -> {name}")
+            #self.append_log(f"状态：已是喜爱 -> {name}")
             return
         fav.add(name)
         self._save_favourites_for(entry.container_dir)
         self._refresh_photo_info()
         self._refresh_session_change_view()
-        self.status_var.set(f"状态：已标记喜爱 -> {name}")
         self.append_log(f"标记喜爱: {entry.rel_to_base}")
 
     def remove_favourite(self) -> None:
@@ -726,13 +723,12 @@ class FavouriteFilesApp:
         name = entry.absolute_path.name
         fav = self._favourites_for(entry.container_dir)
         if name not in fav:
-            self.status_var.set(f"状态：当前未标记喜爱 -> {name}")
+            #self.append_log(f"状态：当前未标记喜爱 -> {name}")
             return
         fav.remove(name)
         self._save_favourites_for(entry.container_dir)
         self._refresh_photo_info()
         self._refresh_session_change_view()
-        self.status_var.set(f"状态：已取消喜爱 -> {name}")
         self.append_log(f"取消喜爱: {entry.rel_to_base}")
 
     def open_current_image(self) -> None:
@@ -772,7 +768,7 @@ class FavouriteFilesApp:
         dst = entry.container_dir / f"favourite_list_{timestamp}.txt"
         try:
             shutil.copy2(src, dst)
-            self.status_var.set(f"状态：已备份 -> {dst.name}")
+            self.append_log(f"状态：已备份 -> {dst.name}")
             self.append_log(f"已备份喜爱清单: {dst}")
         except OSError as exc:
             messagebox.showwarning("备份失败", f"无法创建备份文件：\n{exc}")
@@ -846,7 +842,6 @@ class FavouriteFilesApp:
                 def finish() -> None:
                     self._copy_running = False
                     self.append_log(done_msg)
-                    self.status_var.set(f"状态：{done_msg}")
                     self._update_controls_state()
 
                 self.root.after(0, finish)
