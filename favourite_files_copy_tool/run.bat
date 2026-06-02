@@ -11,9 +11,9 @@ pause
 exit /b 1
 
 :use_py
-py -3 -c "import PIL" 2>nul
+py -3 -c "import PIL, cv2" 2>nul
 if errorlevel 1 (
-    echo Installing Pillow from requirements.txt ...
+    echo Installing dependencies from requirements.txt ...
     py -3 -m pip install -r requirements.txt
     if errorlevel 1 (
         echo [ERROR] pip install failed. Run: py -3 -m pip install -r requirements.txt
@@ -26,9 +26,9 @@ if errorlevel 1 pause
 exit /b 0
 
 :use_python
-python -c "import PIL" 2>nul
+python -c "import PIL, cv2" 2>nul
 if errorlevel 1 (
-    echo Installing Pillow from requirements.txt ...
+    echo Installing dependencies from requirements.txt ...
     python -m pip install -r requirements.txt
     if errorlevel 1 (
         echo [ERROR] pip install failed. Run: python -m pip install -r requirements.txt

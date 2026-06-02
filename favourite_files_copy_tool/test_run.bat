@@ -1,1 +1,3 @@
-python "favourite_files_app.py" "E:\AdbBak\TestData\IconLib"
+@echo off
+cd /d "%~dp0"
+call run.bat "E:\AdbBak\TestData\IconLib"

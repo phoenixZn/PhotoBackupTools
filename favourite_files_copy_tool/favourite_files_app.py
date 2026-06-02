@@ -56,6 +56,7 @@ from favourites import (
     write_preview_position,
 )
 from traversal import ImageEntry, build_dir_first_indices, build_image_entries
+from video_preview import VideoInfo, format_duration, get_video_info, get_video_thumbnail
 
 
 class FavouriteFilesApp:
@@ -75,6 +76,7 @@ class FavouriteFilesApp:
         self.current_photo_image: Optional[ImageTk.PhotoImage] = None
         self.current_image_size: Optional[tuple[int, int]] = None
         self.current_shoot_time: Optional[str] = None
+        self.current_video_info: Optional[VideoInfo] = None
         self._render_after_id: Optional[str] = None
         self._copy_running = False
         self.dir_first_indices: list[int] = []
@@ -164,7 +166,7 @@ class FavouriteFilesApp:
         self.image_label = ttk.Label(
             preview_frame,
             anchor="center",
-            text="请选择 Base 目录并开始浏览照片。",
+            text="请选择 Base 目录并开始浏览文件。",
         )
         self.image_label.grid(row=0, column=0, sticky="nsew")
         self.image_label.bind("<Configure>", self._on_image_area_resize)
@@ -242,7 +244,7 @@ class FavouriteFilesApp:
             actions, text="取消喜爱 (S / ↓)", command=self.remove_favourite
         )
         self.remove_btn.grid(row=0, column=6, padx=(0, 4))
-        self.open_btn = ttk.Button(actions, text="打开图片", command=self.open_current_image)
+        self.open_btn = ttk.Button(actions, text="打开文件", command=self.open_current_image)
         self.open_btn.grid(row=0, column=7, padx=(4, 0))
         self.locate_btn = ttk.Button(actions, text="定位", command=self.locate_current_image)
         self.locate_btn.grid(row=0, column=8, padx=(4, 0))
@@ -356,18 +358,25 @@ class FavouriteFilesApp:
                 self.initial_favourites_by_dir[cdir] = set(fav)
 
         self.current_index = read_preview_index(self.entries, self.base_dir)
-        self.append_log(f"已加载 Base: {self.base_dir}，共 {len(self.entries)} 张图片")
+        image_count = sum(1 for e in self.entries if e.media_kind == "image")
+        video_count = sum(1 for e in self.entries if e.media_kind == "video")
+        self.append_log(
+            f"已加载 Base: {self.base_dir}，共 {len(self.entries)} 个文件"
+            f"（图片 {image_count}，视频 {video_count}）"
+        )
 
         if not self.entries:
             self.dir_first_indices = []
-            self._clear_preview("当前 Base 下未发现可预览的图片。")
-            self.status_var.set("状态：目录中无图片")
+            self._clear_preview("当前 Base 下未发现可预览的文件。")
+            self.status_var.set("状态：目录中无文件")
             self.subdir_var.set("-")
             self._refresh_session_change_view()
             self._update_controls_state()
             return
 
-        self.status_var.set(f"状态：已加载 {len(self.entries)} 张图片")
+        self.status_var.set(
+            f"状态：已加载 {len(self.entries)} 个文件（图片 {image_count}，视频 {video_count}）"
+        )
         self._refresh_session_change_view()
         self._show_current_image()
 
@@ -375,6 +384,7 @@ class FavouriteFilesApp:
         self.current_photo_image = None
         self.current_image_size = None
         self.current_shoot_time = None
+        self.current_video_info = None
         self.image_label.configure(image="", text=text)
         self.info_var.set("文件信息：-")
         self._refresh_favourite_state_label(False)
@@ -402,11 +412,16 @@ class FavouriteFilesApp:
         self.subdir_var.set(str(entry.container_dir))
         current_path = entry.absolute_path
 
+        if entry.media_kind == "video":
+            self._show_current_video(entry, current_path)
+            return
+
         try:
             with Image.open(current_path) as img:
                 img = ImageOps.exif_transpose(img)
                 self.current_image_size = img.size
                 self.current_shoot_time = self._extract_shoot_time(img)
+                self.current_video_info = None
                 display = img.copy()
                 max_w, max_h = self._get_preview_size()
                 display.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
@@ -414,11 +429,47 @@ class FavouriteFilesApp:
             self.current_photo_image = None
             self.current_image_size = None
             self.current_shoot_time = None
+            self.current_video_info = None
             self.image_label.configure(
                 image="", text=f"无法预览图片：{current_path.name}\n{exc}"
             )
             self.info_var.set(f"文件信息：{current_path.name}（加载失败）")
             self.status_var.set("状态：加载图片失败")
+            self._update_controls_state()
+            return
+
+        self.current_photo_image = ImageTk.PhotoImage(display)
+        self.image_label.configure(image=self.current_photo_image, text="")
+
+        if self.base_dir:
+            write_preview_position(self.base_dir, entry.rel_to_base)
+        self._refresh_photo_info()
+        self._update_controls_state()
+
+    def _show_current_video(self, entry: ImageEntry, current_path: Path) -> None:
+        max_w, max_h = self._get_preview_size()
+        self.current_video_info = get_video_info(current_path)
+        if self.current_video_info:
+            self.current_image_size = (
+                self.current_video_info.width,
+                self.current_video_info.height,
+            )
+        else:
+            self.current_image_size = None
+        self.current_shoot_time = None
+
+        display = get_video_thumbnail(current_path, (max_w, max_h))
+        if display is None:
+            self.current_photo_image = None
+            self.image_label.configure(
+                image="",
+                text=f"无法预览视频：{current_path.name}\n请用「打开文件」在系统中播放。",
+            )
+            self.info_var.set(f"文件信息：{current_path.name}（预览失败）")
+            self.status_var.set("状态：加载视频预览失败")
+            if self.base_dir:
+                write_preview_position(self.base_dir, entry.rel_to_base)
+            self._refresh_photo_info()
             self._update_controls_state()
             return
 
@@ -450,11 +501,28 @@ class FavouriteFilesApp:
         )
         shoot_time = self.current_shoot_time or "无"
         starred = "是" if self._is_current_favourite() else "否"
-        self.info_var.set(
-            f"文件：{path.name} | 序号：{index_text} | 相对路径：{entry.rel_to_base} | "
-            f"分辨率：{resolution} | 大小：{size_text} | 修改时间：{modified_time} | "
-            f"拍摄时间：{shoot_time} | 喜爱：{starred}"
-        )
+        if entry.media_kind == "video":
+            duration = format_duration(
+                self.current_video_info.duration_sec if self.current_video_info else None
+            )
+            fps_text = (
+                f"{self.current_video_info.fps:.2f}fps"
+                if self.current_video_info and self.current_video_info.fps
+                else "未知"
+            )
+            self.info_var.set(
+                f"文件：{path.name} | 类型：视频 | 序号：{index_text} | "
+                f"相对路径：{entry.rel_to_base} | 分辨率：{resolution} | "
+                f"时长：{duration} | 帧率：{fps_text} | 大小：{size_text} | "
+                f"修改时间：{modified_time} | 喜爱：{starred}"
+            )
+        else:
+            self.info_var.set(
+                f"文件：{path.name} | 类型：图片 | 序号：{index_text} | "
+                f"相对路径：{entry.rel_to_base} | 分辨率：{resolution} | "
+                f"大小：{size_text} | 修改时间：{modified_time} | "
+                f"拍摄时间：{shoot_time} | 喜爱：{starred}"
+            )
         self._refresh_favourite_state_label(starred == "是")
 
     def _refresh_favourite_state_label(self, is_favourite: bool) -> None:
@@ -674,7 +742,7 @@ class FavouriteFilesApp:
         try:
             os.startfile(str(entry.absolute_path))
         except OSError as exc:
-            messagebox.showwarning("打开失败", f"无法用系统默认方式打开图片：\n{exc}")
+            messagebox.showwarning("打开失败", f"无法用系统默认方式打开文件：\n{exc}")
 
     def locate_current_image(self) -> None:
         entry = self._current_entry()
@@ -686,12 +754,12 @@ class FavouriteFilesApp:
                 check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            messagebox.showwarning("定位失败", f"无法定位当前图片：\n{exc}")
+            messagebox.showwarning("定位失败", f"无法定位当前文件：\n{exc}")
 
     def backup_favourite_list(self) -> None:
         entry = self._current_entry()
         if not entry:
-            messagebox.showwarning("备份失败", "请先选择 Base 并浏览图片。")
+            messagebox.showwarning("备份失败", "请先选择 Base 并浏览文件。")
             return
         src = entry.container_dir / FAVOURITE_FILE
         if not src.exists():
