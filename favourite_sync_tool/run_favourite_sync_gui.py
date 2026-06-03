@@ -30,6 +30,8 @@ class FavouriteSyncGuiApp:
         self.log_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.worker_thread: threading.Thread | None = None
         self.running = False
+        # 当前后台任务是同步还是预对比，用于完成时的弹窗文案。
+        self._run_is_preview = False
 
         # 先加载配置，再绑定 UI 变量，保证打开界面即可回填。
         defaults = self.default_config()
@@ -119,6 +121,8 @@ class FavouriteSyncGuiApp:
         controls.grid(row=4, column=0, columnspan=3, sticky=tk.W, pady=(6, 8))
         self.run_button = ttk.Button(controls, text="Run Favourite Sync", command=self.on_run_click)
         self.run_button.pack(side=tk.LEFT, padx=(0, 8))
+        self.preview_button = ttk.Button(controls, text="预对比", command=self.on_preview_click)
+        self.preview_button.pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(controls, text="Clear Log", command=self.clear_log).pack(side=tk.LEFT)
 
         ttk.Label(container, text="Execution Log").grid(row=5, column=0, sticky=tk.NW, padx=(0, 8), pady=(6, 0))
@@ -172,7 +176,7 @@ class FavouriteSyncGuiApp:
             "push_all": push_all,
         }
 
-    def build_command(self, values: dict[str, str | bool]) -> list[str]:
+    def build_command(self, values: dict[str, str | bool], *, preview: bool = False) -> list[str]:
         """
         组装后端命令。
 
@@ -191,7 +195,7 @@ class FavouriteSyncGuiApp:
         if "-u" not in python_items:
             python_items.insert(1 if len(python_items) >= 1 else 0, "-u")
 
-        return [
+        command = [
             *python_items,
             str(BACKEND_SCRIPT),
             "--pc-dir",
@@ -203,7 +207,65 @@ class FavouriteSyncGuiApp:
         ]
         if bool(values["push_all"]):
             command.append("--push-all")
+        if preview:
+            command.append("--preview")
         return command
+
+    def _set_running(self, running: bool) -> None:
+        """统一切换运行状态与按钮可用性。"""
+        self.running = running
+        state = tk.DISABLED if running else tk.NORMAL
+        self.run_button.configure(state=state)
+        self.preview_button.configure(state=state)
+
+    def _start_backend(self, values: dict[str, str | bool], *, preview: bool) -> None:
+        """
+        校验通过后启动后端：确认框 -> 保存配置 -> 后台线程执行。
+
+        preview=True 时附加 --preview，不执行 adb push。
+        """
+        if preview:
+            confirm_title = "Confirm Preview"
+            confirm_text = (
+                "Preview sync plan (no files will be pushed):\n\n"
+                f"Python: {values['python']}\n"
+                f"PC Dir: {values['pc_dir']}\n"
+                f"Phone Dir: {values['phone_dir']}\n"
+                f"List File: {values['list_file']}\n"
+                f"Push All: {values['push_all']}\n"
+            )
+            log_title = "Starting preview (no push)..."
+        else:
+            confirm_title = "Confirm"
+            confirm_text = (
+                "Please confirm sync settings:\n\n"
+                f"Python: {values['python']}\n"
+                f"PC Dir: {values['pc_dir']}\n"
+                f"Phone Dir: {values['phone_dir']}\n"
+                f"List File: {values['list_file']}\n"
+                f"Push All: {values['push_all']}\n"
+            )
+            log_title = "Starting favourite sync..."
+
+        if not messagebox.askyesno(confirm_title, confirm_text):
+            return
+
+        try:
+            self.save_config()
+        except Exception as exc:
+            messagebox.showwarning("Warning", f"Could not save GUI config: {exc}")
+
+        command = self.build_command(values, preview=preview)
+        self._run_is_preview = preview
+        self._set_running(True)
+        self.log_line("")
+        self.log_line("=" * 64)
+        self.log_line(log_title)
+        self.log_line("Command: " + " ".join(command))
+        self.log_line("=" * 64)
+
+        self.worker_thread = threading.Thread(target=self.execute_command, args=(command,), daemon=True)
+        self.worker_thread.start()
 
     def on_run_click(self) -> None:
         """处理“Run Favourite Sync”点击事件。"""
@@ -214,34 +276,18 @@ class FavouriteSyncGuiApp:
         except ValueError as exc:
             messagebox.showerror("Invalid input", str(exc))
             return
+        self._start_backend(values, preview=False)
 
-        confirm_text = (
-            "Please confirm sync settings:\n\n"
-            f"Python: {values['python']}\n"
-            f"PC Dir: {values['pc_dir']}\n"
-            f"Phone Dir: {values['phone_dir']}\n"
-            f"List File: {values['list_file']}\n"
-            f"Push All: {values['push_all']}\n"
-        )
-        if not messagebox.askyesno("Confirm", confirm_text):
+    def on_preview_click(self) -> None:
+        """处理「预对比」点击：只列出待同步文件，不执行 push。"""
+        if self.running:
             return
-
         try:
-            self.save_config()
-        except Exception as exc:
-            messagebox.showwarning("Warning", f"Could not save GUI config: {exc}")
-
-        command = self.build_command(values)
-        self.running = True
-        self.run_button.configure(state=tk.DISABLED)
-        self.log_line("")
-        self.log_line("=" * 64)
-        self.log_line("Starting favourite sync...")
-        self.log_line("Command: " + " ".join(command))
-        self.log_line("=" * 64)
-
-        self.worker_thread = threading.Thread(target=self.execute_command, args=(command,), daemon=True)
-        self.worker_thread.start()
+            values = self.collect_and_validate()
+        except ValueError as exc:
+            messagebox.showerror("Invalid input", str(exc))
+            return
+        self._start_backend(values, preview=True)
 
     def execute_command(self, command: list[str]) -> None:
         """
@@ -285,18 +331,30 @@ class FavouriteSyncGuiApp:
             if item_type == "line":
                 self.log_line(payload)
             elif item_type == "done":
-                self.running = False
-                self.run_button.configure(state=tk.NORMAL)
+                is_preview = self._run_is_preview
+                self._set_running(False)
                 if payload == "launch_error":
-                    messagebox.showerror("Sync failed", "Could not launch sync command.")
+                    title = "Preview failed" if is_preview else "Sync failed"
+                    messagebox.showerror(title, "Could not launch backend command.")
                 else:
                     exit_code = int(payload)
                     self.log_line("")
                     self.log_line(f"Process finished with exit code {exit_code}.")
                     if exit_code == 0:
-                        messagebox.showinfo("Sync completed", "Favourite sync finished successfully.")
+                        if is_preview:
+                            messagebox.showinfo(
+                                "Preview completed",
+                                "Preview finished. See log for files to sync.",
+                            )
+                        else:
+                            messagebox.showinfo(
+                                "Sync completed",
+                                "Favourite sync finished successfully.",
+                            )
                     else:
-                        messagebox.showerror("Sync failed", f"Favourite sync exited with code {exit_code}.")
+                        title = "Preview failed" if is_preview else "Sync failed"
+                        action = "Preview" if is_preview else "Favourite sync"
+                        messagebox.showerror(title, f"{action} exited with code {exit_code}.")
 
         self.root.after(80, self.flush_log_queue)
 

@@ -1,7 +1,7 @@
 {
   "python": "python",
-  "pc_dir": "E:\\AdbBak\\TestData\\IconLib\\GuoQi",
-  "phone_dir": "/sdcard/DCIM/Favourite1",
+  "pc_dir": "E:/AdbBak/TestData/IconLib/HeroHead",
+  "phone_dir": "/sdcard/DCIM/FV",
   "list_file": "favourite_list.txt",
-  "push_all": false
+  "push_all": true
 }

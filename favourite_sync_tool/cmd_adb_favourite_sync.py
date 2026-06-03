@@ -7,6 +7,7 @@ ADB favourite 文件推送脚本（命令行版）。
   1) 传入 `--push-all`：忽略清单文件，直接推送整个目录内容。
   2) 否则读取 `--list-file` 指定的清单文件：按行逐条推送文件。
 - 若清单文件不存在或为空：提示后结束（退出码 0，不算错误）。
+- 传入 `--preview`：只读扫描 PC/手机元数据，打印待同步文件列表与计数，不执行 push。
 
 实现重点：
 - 优先使用 `adb push --sync`，不支持时自动降级为 `adb push`。
@@ -19,11 +20,29 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Sequence
 
 
 DEFAULT_LIST_FILE = "favourite_list.txt"
+
+
+@dataclass(frozen=True)
+class PcCandidate:
+    """预对比用的 PC 侧候选文件。"""
+
+    display_key: str  # 报告里显示的路径（push_all 为相对路径，清单模式为文件名）
+    source_path: Path
+    remote_key: str  # 与手机索引 dict 对齐的 key
+
+
+@dataclass(frozen=True)
+class PreviewToSyncItem:
+    """一条待同步记录。"""
+
+    display_key: str
+    reason: str  # new | size | mtime
 
 
 def run_cmd(command: Sequence[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -137,6 +156,106 @@ def is_sync_option_unsupported(text: str) -> bool:
     """判断 adb 是否不支持 --sync 选项。"""
     lowered = text.lower()
     return "unknown option" in lowered or "invalid option" in lowered
+
+
+def probe_adb_sync_supported() -> bool:
+    """
+    探测当前 adb 是否支持 `push --sync`（不传输文件）。
+
+    通过缺少参数的命令触发帮助/用法输出，再根据 stderr 是否含 unknown option 判断。
+    """
+    proc = run_cmd(["adb", "push", "--sync"], check=False)
+    merged = f"{proc.stdout}\n{proc.stderr}"
+    return not is_sync_option_unsupported(merged)
+
+
+def build_find_with_stat(phone_dir: str, stat_bin: str) -> str:
+    """构造在设备端执行的 find+stat shell 命令（输出 mtime|size|path）。"""
+    escaped = normalize_phone_dir(phone_dir).replace("'", "'\"'\"'")
+    return f"find '{escaped}' -type f -exec {stat_bin} -c '%Y|%s|%n' {{}} \\;"
+
+
+def relative_to_phone_root(remote_path: str, phone_dir: str) -> str:
+    """
+    将手机绝对路径转为相对 phone_dir 的 posix key。
+
+    若不在 root 下则退化为文件名，避免脏路径导致预对比中断。
+    """
+    rp = normalize_phone_dir(remote_path)
+    root_n = normalize_phone_dir(phone_dir)
+    if rp == root_n:
+        return ""
+    prefix = root_n + "/"
+    if rp.startswith(prefix):
+        return rp[len(prefix) :]
+    return PurePosixPath(rp).name
+
+
+def fetch_remote_file_index(phone_dir: str) -> dict[str, tuple[int, int]]:
+    """
+    扫描手机目标目录，建立相对路径 -> (size, mtime_epoch) 索引。
+
+    手机目录不存在（missing）时由调用方传入空 dict，表示全部 PC 文件视为新建待推。
+    """
+    kind = get_remote_path_kind(phone_dir)
+    if kind == "missing":
+        # 预览模式不 mkdir；无远端文件则索引为空。
+        return {}
+
+    # 不同 ROM 上 stat 命令名可能不同，按兼容顺序尝试。
+    candidates = ("stat", "toybox stat", "busybox stat")
+    last_err: Exception | None = None
+
+    for stat_cmd in candidates:
+        command = build_find_with_stat(phone_dir, stat_cmd)
+        try:
+            completed = run_cmd(["adb", "shell", command], check=True)
+            index: dict[str, tuple[int, int]] = {}
+            for line in completed.stdout.splitlines():
+                row = line.strip()
+                if not row or "|" not in row:
+                    continue
+                parts = row.split("|", 2)
+                if len(parts) != 3:
+                    continue
+                mtime_raw, size_raw, remote_path = parts
+                try:
+                    rel = relative_to_phone_root(remote_path.strip(), phone_dir)
+                    if not rel:
+                        continue
+                    index[rel] = (int(size_raw), int(mtime_raw))
+                except ValueError:
+                    continue
+            if index or completed.stdout.strip() == "":
+                # 空目录也算扫描成功。
+                return index
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+            continue
+
+    raise RuntimeError(
+        "Failed to read file metadata from device via adb shell stat/toybox/busybox."
+    ) from last_err
+
+
+def needs_sync(
+    pc_size: int,
+    pc_mtime: float,
+    remote: tuple[int, int] | None,
+) -> tuple[bool, str]:
+    """
+    模拟 `adb push --sync` 的增量判定（预估，最终以实推为准）。
+
+    规则：远端不存在 -> new；大小不同 -> size；本地 mtime 更新 -> mtime；否则跳过。
+    """
+    if remote is None:
+        return True, "new"
+    remote_size, remote_mtime = remote
+    if pc_size != remote_size:
+        return True, "size"
+    if int(pc_mtime) > remote_mtime:
+        return True, "mtime"
+    return False, "skip"
 
 
 def adb_push_with_optional_sync(local_src: str, phone_dest: str) -> tuple[bool, subprocess.CompletedProcess[str]]:
@@ -255,6 +374,147 @@ def sync_list_mode(pc_dir: Path, phone_dir: str, entries: list[str], list_file_n
     return 0 if failed == 0 else 1
 
 
+def collect_pc_candidates_push_all(pc_dir: Path) -> list[PcCandidate]:
+    """
+    全量模式：收集 pc_dir 下所有文件，远端 key 为相对路径（与 push 目录内容一致）。
+    """
+    result: list[PcCandidate] = []
+    for path in sorted(pc_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(pc_dir).as_posix()
+        result.append(PcCandidate(display_key=rel, source_path=path, remote_key=rel))
+    return result
+
+
+def collect_pc_candidates_list(
+    pc_dir: Path, entries: list[str]
+) -> tuple[list[PcCandidate], int]:
+    """
+    清单模式：收集可对比的候选；无效/缺失/非文件计入 invalid_count。
+
+    远端 key 仅为文件名（与 adb push <file> <phone_dir>/ 落盘规则一致，不保留子目录）。
+    """
+    candidates: list[PcCandidate] = []
+    invalid_count = 0
+    for entry in entries:
+        try:
+            source_path = resolve_list_item(pc_dir, entry)
+        except Exception:
+            invalid_count += 1
+            continue
+        if not source_path.exists() or not source_path.is_file():
+            invalid_count += 1
+            continue
+        remote_key = PurePosixPath(entry.replace("\\", "/")).name
+        candidates.append(
+            PcCandidate(display_key=remote_key, source_path=source_path, remote_key=remote_key)
+        )
+    return candidates, invalid_count
+
+
+def print_preview_report(
+    *,
+    mode_label: str,
+    sync_supported: bool,
+    to_sync: list[PreviewToSyncItem],
+    already_synced: int,
+    invalid_or_skipped: int,
+) -> None:
+    """打印预对比报告：待同步列表 + 计数摘要。"""
+    print("=== Preview (no push) ===")
+    print(f"Mode: {mode_label}")
+    print("Rule: simulate adb push --sync (size + mtime)")
+    print(f"ADB --sync supported: {'yes' if sync_supported else 'no'}")
+    if not sync_supported:
+        print(
+            "Warning: current adb does not support '--sync'; actual sync may push more files than listed."
+        )
+    print("")
+    print(f"[To Sync] count={len(to_sync)}")
+    for item in to_sync:
+        prefix = "+" if item.reason == "new" else "~"
+        print(f"  {prefix} {item.display_key}  ({item.reason})")
+    print("")
+    print("Summary:")
+    print(f"  to_sync={len(to_sync)}")
+    print(f"  already_synced={already_synced}")
+    print(f"  invalid_or_skipped={invalid_or_skipped}")
+
+
+def run_preview_comparison(
+    pc_dir: Path,
+    phone_dir: str,
+    candidates: list[PcCandidate],
+    *,
+    mode_label: str,
+    invalid_or_skipped: int = 0,
+) -> int:
+    """对候选文件执行预对比并输出报告。"""
+    sync_supported = probe_adb_sync_supported()
+    remote_index = fetch_remote_file_index(phone_dir)
+
+    to_sync: list[PreviewToSyncItem] = []
+    already_synced = 0
+
+    for cand in candidates:
+        st = cand.source_path.stat()
+        remote = remote_index.get(cand.remote_key)
+        should_sync, reason = needs_sync(st.st_size, st.st_mtime, remote)
+        if should_sync:
+            to_sync.append(PreviewToSyncItem(display_key=cand.display_key, reason=reason))
+        else:
+            already_synced += 1
+
+    print_preview_report(
+        mode_label=mode_label,
+        sync_supported=sync_supported,
+        to_sync=to_sync,
+        already_synced=already_synced,
+        invalid_or_skipped=invalid_or_skipped,
+    )
+    return 0
+
+
+def preview_push_all_mode(pc_dir: Path, phone_dir: str) -> int:
+    """预对比：全量推送模式。"""
+    candidates = collect_pc_candidates_push_all(pc_dir)
+    return run_preview_comparison(
+        pc_dir,
+        phone_dir,
+        candidates,
+        mode_label="push_all",
+    )
+
+
+def preview_list_mode(
+    pc_dir: Path, phone_dir: str, entries: list[str], list_file_name: str
+) -> int:
+    """预对比：清单文件模式。"""
+    candidates, invalid_count = collect_pc_candidates_list(pc_dir, entries)
+    return run_preview_comparison(
+        pc_dir,
+        phone_dir,
+        candidates,
+        mode_label=f"list_file={list_file_name} (total entries: {len(entries)})",
+        invalid_or_skipped=invalid_count,
+    )
+
+
+def ensure_preview_remote_target(phone_dir: str) -> None:
+    """
+    预对比前检查手机目标路径；若为文件则报错（与实推一致）。
+
+    预览模式不调用 mkdir，避免对设备产生写入副作用。
+    """
+    kind = get_remote_path_kind(phone_dir)
+    if kind == "file":
+        raise RuntimeError(
+            "Remote target exists as a file, not a directory. "
+            f"Please delete or rename it first: {normalize_phone_dir(phone_dir)}"
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Sync favourite files from PC directory to Android directory."
@@ -271,6 +531,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="If set, push all files under pc-dir and ignore --list-file.",
     )
+    parser.add_argument(
+        "--preview",
+        action="store_true",
+        help="Preview only: list files that would sync, without adb push.",
+    )
     return parser.parse_args()
 
 
@@ -284,8 +549,6 @@ def main() -> int:
             return 2
 
         ensure_adb_ready()
-        # 先保证目标是目录，避免 `/sdcard/xxx` 被 adb 误创建为文件。
-        ensure_remote_directory(args.phone_dir)
 
         list_file_name = (args.list_file or DEFAULT_LIST_FILE).strip()
         if not list_file_name:
@@ -296,6 +559,28 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
+
+        if args.preview:
+            # 预对比：只读检查目标路径类型，不 mkdir、不 push。
+            ensure_preview_remote_target(args.phone_dir)
+            if args.push_all:
+                return preview_push_all_mode(pc_dir, args.phone_dir)
+
+            list_file_path = pc_dir / list_file_name
+            if not list_file_path.exists():
+                print(f"No {list_file_name} found under: {pc_dir}")
+                print("No preview action. Exit.")
+                return 0
+
+            entries = read_favourite_entries(list_file_path)
+            if not entries:
+                print(f"{list_file_name} is empty. No preview action. Exit.")
+                return 0
+
+            return preview_list_mode(pc_dir, args.phone_dir, entries, list_file_name)
+
+        # 实推：先保证目标是目录，避免 `/sdcard/xxx` 被 adb 误创建为文件。
+        ensure_remote_directory(args.phone_dir)
 
         if args.push_all:
             return sync_all_mode(pc_dir, args.phone_dir)
