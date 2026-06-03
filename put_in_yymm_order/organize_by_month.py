@@ -1,5 +1,5 @@
 """
-目录整理 CLI 工具（支持按年 / 按月 / 按日）。
+目录整理 CLI 工具（支持按年 / 按月 / 按日 / 合并）。
 
 使用说明（示例）：
 1) 交互确认后执行（默认按月）：
@@ -10,6 +10,8 @@
    python organize_by_month.py --root "D:/demo/source_dir" --output "D:/demo/archive" --yes
 4) 给 GUI 使用的结构化事件输出（按日）：
    python organize_by_month.py --root "D:/demo/source_dir" --yes --json-events --group-by day
+5) 扁平合并到输出目录（不按时间分子目录）：
+   python organize_by_month.py --root "D:/demo/source_dir" --yes --group-by merge
 """
 
 from __future__ import annotations
@@ -30,18 +32,20 @@ from typing import Callable, Dict, List, Literal
 
 
 EVENT_PREFIX = "__EVENT__ "
-GroupByMode = Literal["year", "month", "day"]
+GroupByMode = Literal["year", "month", "day", "merge"]
 
 # 统一定义展示文案和输出目录后缀，避免 CLI/GUI/日志口径不一致。
 GROUP_BY_LABELS: dict[GroupByMode, str] = {
     "year": "按年",
     "month": "按月",
     "day": "按日",
+    "merge": "合并",
 }
 GROUP_BY_FOLDER_SUFFIX: dict[GroupByMode, str] = {
     "year": "Y",
     "month": "YM",
     "day": "YMD",
+    "merge": "Merge",
 }
 
 
@@ -97,11 +101,18 @@ def confirm_operation(
     backup_root: Path,
 ) -> bool:
     mode_label = GROUP_BY_LABELS[group_by]
+    if group_by == "merge":
+        action_hint = (
+            "此操作将移动所有文件到目标输出目录（扁平合并，不按时间分子目录），"
+            "是否继续？[y/N]: "
+        )
+    else:
+        action_hint = "此操作将移动所有文件到目标时间目录，是否继续？[y/N]: "
     prompt = (
         f"将整理目录：{root_dir}\n"
         f"输出目录：{backup_root}\n"
         f"整理模式：{mode_label}\n"
-        "此操作将移动所有文件到目标时间目录，是否继续？[y/N]: "
+        f"{action_hint}"
     )
     try:
         answer = input(prompt).strip().lower()
@@ -111,13 +122,34 @@ def confirm_operation(
 
 
 def build_time_bucket_name(file_path: Path, *, group_by: GroupByMode) -> str:
+    """按 mtime 生成时间子目录名；仅用于 year/month/day，merge 模式勿调用。"""
     modified_dt = datetime.fromtimestamp(file_path.stat().st_mtime)
     # 分目录策略只依赖 mtime，便于保持性能和行为可预期。
     if group_by == "year":
         return f"{modified_dt.year:04d}"
     if group_by == "month":
         return f"{modified_dt.year:04d}_{modified_dt.month:02d}"
-    return f"{modified_dt.year:04d}_{modified_dt.month:02d}_{modified_dt.day:02d}"
+    if group_by == "day":
+        return f"{modified_dt.year:04d}_{modified_dt.month:02d}_{modified_dt.day:02d}"
+    raise ValueError(f"build_time_bucket_name 不支持 group_by={group_by!r}")
+
+
+def resolve_file_target(
+    file_path: Path,
+    *,
+    group_by: GroupByMode,
+    backup_root: Path,
+) -> tuple[Path, str]:
+    """
+    返回 (目标目录, 日志桶名)。
+
+    merge：扁平归档到 backup_root，日志桶名为 '.'（与相对路径根 '.' 语义一致）。
+    其他：在 backup_root 下按 mtime 创建时间子目录，桶名为 YYYY / YYYY_MM / YYYY_MM_DD。
+    """
+    if group_by == "merge":
+        return backup_root, "."
+    bucket_name = build_time_bucket_name(file_path, group_by=group_by)
+    return backup_root / bucket_name, bucket_name
 
 
 def iter_all_files(root_dir: Path) -> List[Path]:
@@ -311,8 +343,11 @@ def organize_files(
             )
             continue
         try:
-            bucket_dir_name = build_time_bucket_name(file_path, group_by=group_by)
-            bucket_dir = backup_root / bucket_dir_name
+            bucket_dir, bucket_dir_name = resolve_file_target(
+                file_path,
+                group_by=group_by,
+                backup_root=backup_root,
+            )
             bucket_dir.mkdir(parents=True, exist_ok=True)
             relative_parent = file_path.parent.relative_to(root_dir)
             from_dir = "." if str(relative_parent) == "." else str(relative_parent)
@@ -382,7 +417,11 @@ def organize_files(
             )
         except Exception as exc:
             stats.failed_files += 1
-            bucket_dir_name = build_time_bucket_name(file_path, group_by=group_by)
+            _, bucket_dir_name = resolve_file_target(
+                file_path,
+                group_by=group_by,
+                backup_root=backup_root,
+            )
             relative_parent = file_path.parent.relative_to(root_dir)
             from_dir = "." if str(relative_parent) == "." else str(relative_parent)
             error_message = (
@@ -463,21 +502,26 @@ def organize_files(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="将目录中的文件按修改时间（年/月/日）整理到同级备份目录。")
+    parser = argparse.ArgumentParser(
+        description="将目录中的文件按修改时间（年/月/日）或合并模式整理到备份目录。"
+    )
     parser.add_argument("--root", required=True, help="待整理的根目录路径")
     parser.add_argument(
         "--output",
         default="",
         help=(
             "输出目录（可选）。指定有效目录时直接使用该路径；"
-            "未指定时默认使用 {根目录名}_{Y|YM|YMD} 同级目录"
+            "未指定时默认使用 {根目录名}_{Y|YM|YMD|Merge} 同级目录"
         ),
     )
     parser.add_argument(
         "--group-by",
         default="month",
-        choices=["year", "month", "day"],
-        help="分目录模式：year=按年，month=按月（默认），day=按日",
+        choices=["year", "month", "day", "merge"],
+        help=(
+            "分目录模式：year=按年，month=按月（默认），day=按日，"
+            "merge=合并（全部文件扁平到输出目录）"
+        ),
     )
     parser.add_argument(
         "--remove-empty-dirs",

@@ -1,5 +1,5 @@
 """
-目录整理 GUI 启动器（tkinter，支持按年/按月/按日）。
+目录整理 GUI 启动器（tkinter，支持按年/按月/按日/合并）。
 
 使用说明（示例）：
 1) 启动界面：
@@ -39,6 +39,7 @@ GROUP_BY_LABEL_TO_VALUE = {
     "按年": "year",
     "按月": "month",
     "按日": "day",
+    "合并": "merge",
 }
 # 配置文件存英文值，界面显示中文标签。
 GROUP_BY_VALUE_TO_LABEL = {value: key for key, value in GROUP_BY_LABEL_TO_VALUE.items()}
@@ -84,7 +85,9 @@ class MonthOrganizerGUI:
         self.output_entry = ttk.Entry(output_frame, textvariable=self.output_dir_var)
         self.output_entry.pack(side="left", fill="x", expand=True, padx=(6, 8))
         ttk.Button(output_frame, text="浏览", command=self._select_output_dir).pack(side="left")
-        ttk.Label(output_frame, text="留空=默认 {根目录名}_{Y|YM|YMD}").pack(side="left", padx=(8, 0))
+        ttk.Label(output_frame, text="留空=默认 {根目录名}_{Y|YM|YMD|Merge}").pack(
+            side="left", padx=(8, 0)
+        )
 
         whitelist_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
         whitelist_frame.pack(fill="x")
@@ -107,7 +110,7 @@ class MonthOrganizerGUI:
         self.group_by_combo.bind("<<ComboboxSelected>>", self._on_group_mode_changed)
         ttk.Label(
             group_frame,
-            text="按年=YYYY，按月=YYYY_MM，按日=YYYY_MM_DD",
+            text="按年=YYYY，按月=YYYY_MM，按日=YYYY_MM_DD；合并=全部扁平到输出目录",
         ).pack(side="left")
 
         option_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
@@ -314,10 +317,15 @@ class MonthOrganizerGUI:
             messagebox.showwarning("目录无效", "请选择一个存在的目录。")
             return
 
-        confirmed = messagebox.askyesno(
-            "安全确认",
-            "此操作将移动所有文件到目标时间目录，是否继续？",
-        )
+        group_by = self.group_by_var.get().strip() or "month"
+        if group_by == "merge":
+            confirm_text = (
+                "此操作将移动所有文件到目标输出目录（扁平合并，不按时间分子目录），"
+                "是否继续？"
+            )
+        else:
+            confirm_text = "此操作将移动所有文件到目标时间目录，是否继续？"
+        confirmed = messagebox.askyesno("安全确认", confirm_text)
         if not confirmed:
             self._append_log("用户取消了本次整理。")
             return
@@ -451,7 +459,7 @@ def create_root() -> tk.Tk:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="目录整理 GUI 启动器（按年/按月/按日）。")
+    parser = argparse.ArgumentParser(description="目录整理 GUI 启动器（按年/按月/按日/合并）。")
     parser.add_argument(
         "--settings-file",
         default=SETTINGS_FILE_NAME,
